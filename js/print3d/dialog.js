@@ -9,6 +9,9 @@
 //          field), silhouette(): Promise<features.silhouette | null> }
 
 import { PRODUCTS } from './products.js';
+// the products the app offers: the relief plaque and the wire sculpture (the lithophane and the
+// cookie cutter builders stay in products.js for the lab, but they did not look good enough to offer)
+const OFFERED = PRODUCTS.filter(p => p.id === 'plaque' || p.id === 'wire');
 import { createViewer, attachOrbit, prepareMesh } from './view.js';
 import * as P from './presets.js';
 import { cutterVerdict } from '../lineart/index.js';
@@ -69,10 +72,10 @@ export function availability(kind, sil) {
   const dense = !!DENSE[kind];
   const a = {
     plaque: { ok: kind !== 'real', reason: kind === 'real' ? 'Realistic lines pack so tightly that, at any size that fits a bed, they fuse into one solid block.' : '',
-      suggest: kind === 'real' ? 'litho' : null,
+      suggest: null,
       note: kind === 'spiral' ? 'The spiral is rebuilt with fewer, wider rings so they print apart; the face reads more faintly than on screen.'
         : kind === 'wander' || kind === 'maze' ? 'The tight turns of this path fuse into a textured relief at this size.' : '' },
-    wire: { ok: !dense, reason: dense ? 'A dense line fuses into a solid disc when printed as one wire.' : '', suggest: dense ? 'litho' : null,
+    wire: { ok: !dense, reason: dense ? 'A dense line fuses into a solid disc when printed as one wire.' : '', suggest: dense && kind !== 'real' ? 'plaque' : null,
       note: dense ? '' : 'The one line itself, printed flat; crossings fuse so it holds together.' },
     litho: { ok: true, best: dense, reason: '', note: dense ? 'Best for this drawing: the tone shows when a light is behind it.' : 'Looks plain until a light is behind it.' },
     cutter: { ok: true, reason: '', note: dense ? 'The cutter is the outline of the photo’s subject, not of the drawing; the stamp is off because a dense drawing presses a flat block.' : 'The cutter is the outline of the photo’s subject; the stamp carries the line.' },
@@ -267,6 +270,14 @@ export function createPrint3DDialog(ctx) {
     syncFoot();
   }
 
+  /** A standing lithophane whose foot has its own colour (one filament change at the foot's top). */
+  function lithoTwo() {
+    const c = colors();
+    return st.product === 'litho' && st.result?.settings?.orientation === 'standing' && !!c.stand && !same(c.stand, c.panel);
+  }
+  /** A two-colour lithophane on a printer without an AMS: one pause at the foot's top, all from slot 1. */
+  const lithoSwap = () => lithoTwo() && printer().multi !== 'ams';
+
   // ---------------------------------------------------------------- coloured parts for the view, the files and the film
   function coloredParts() {
     if (!st.result) return [];
@@ -293,7 +304,7 @@ export function createPrint3DDialog(ctx) {
   // ---------------------------------------------------------------- UI: product cards
   function renderCards() {
     const av = availability(st.kind, silKnown());
-    $('p3Cards').innerHTML = PRODUCTS.map(p => {
+    $('p3Cards').innerHTML = OFFERED.map(p => {
       const a = av[p.id];
       const tag = !a.ok ? a.tag || 'Not for this drawing' : a.best ? 'Prints well · best pick' : 'Prints well';
       return `<button type="button" role="radio" class="p3-card${a.ok ? '' : ' off'}" data-v="${p.id}" aria-checked="${st.product === p.id}" ${a.ok ? '' : 'aria-disabled="true"'}
@@ -304,11 +315,11 @@ export function createPrint3DDialog(ctx) {
   }
   function syncCardNote() {
     const av = availability(st.kind, silKnown()), el = $('p3CardNote');
-    const off = PRODUCTS.filter(p => !av[p.id].ok);
+    const off = OFFERED.filter(p => !av[p.id].ok);
     const cur = av[st.product];
     let html = cur?.note ? `<span>${esc(cur.note)}</span>` : '';
     for (const p of off) {
-      const s = PRODUCTS.find(q => q.id === av[p.id].suggest);
+      const s = OFFERED.find(q => q.id === av[p.id].suggest);
       html += `<span class="p3-off"><b>${p.letter} ${esc(p.name)}:</b> ${esc(av[p.id].reason)}${s ? ` <button type="button" class="text-btn" data-try="${s.id}">Try ${s.letter} ${esc(s.name)}</button>` : ''}</span>`;
     }
     el.innerHTML = html;
@@ -323,7 +334,7 @@ export function createPrint3DDialog(ctx) {
   $('p3Cards').addEventListener('keydown', e => {
     if (!/^Arrow/.test(e.key)) return;
     e.preventDefault();
-    const av = availability(st.kind, silKnown()), ids = PRODUCTS.map(p => p.id).filter(id => av[id].ok);
+    const av = availability(st.kind, silKnown()), ids = OFFERED.map(p => p.id).filter(id => av[id].ok);
     const i = ids.indexOf(st.product), d = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1;
     selectProduct(ids[(i + d + ids.length) % ids.length]);
     $('p3Cards').querySelector(`[data-v="${st.product}"]`)?.focus();
@@ -380,6 +391,7 @@ export function createPrint3DDialog(ctx) {
     o[g.dataset.opt] = b.dataset.v;
     for (const x of g.querySelectorAll('[role="radio"]')) x.setAttribute('aria-checked', x === b);
     if (g.dataset.opt === 'twoColour') { showReport(); showView(); return; }   // no rebuild: the view and the file change
+    if (g.dataset.opt === 'mount' || g.dataset.opt === 'orient') renderColors();   // the stand's colour row comes and goes
     scheduleBuild();
   });
   $('p3OptsBody').addEventListener('change', e => {
@@ -387,31 +399,40 @@ export function createPrint3DDialog(ctx) {
     if (!i || i.type !== 'checkbox') return;
     st.opts[st.product][i.dataset.opt] = i.checked;
     if (st.product === 'cutter') { renderOptions(); renderColors(); }
+    else if (i.dataset.opt === 'stand') renderColors();   // the stand's colour row comes and goes
     scheduleBuild();
   });
 
   // ---------------------------------------------------------------- colours
+  /** Does the product being built have a stand (feet, a slotted stand, a lithophane's foot)? */
+  function hasStand() {
+    const o = st.opts[st.product];
+    return st.product === 'plaque' ? o.mount === 'feet' : st.product === 'wire' ? !!o.stand : st.product === 'litho' ? o.orient === 'standing' : false;
+  }
   function renderColors() {
-    const roles = P.ROLES[st.product].filter(r => !(st.product === 'cutter' && r.id === 'stamp' && !st.opts.cutter.stamp)), c = colors();
+    const roles = P.ROLES[st.product].filter(r => !(st.product === 'cutter' && r.id === 'stamp' && !st.opts.cutter.stamp) && !(r.id === 'stand' && !hasStand())), c = colors();
     const sw = swatches();
     let html = '';
     for (const r of roles) {
-      const cur = c[r.id].toUpperCase();
+      // a stand follows the main colour until the user picks one ("Same as the panel")
+      const own = c[r.id], follow = !!r.follows && !own;
+      const cur = String(own || c[r.follows] || '#FFFFFF').toUpperCase();
       const inList = sw.some(s => s.hex.toUpperCase() === cur);
-      html += `<div class="p3-color"><div class="field-label" id="p3r-${r.id}">${esc(r.label)} <span class="p3-cname">${esc(swatchName(cur))}</span></div>
-        <div class="swatches" role="radiogroup" aria-labelledby="p3r-${r.id}" data-role="${r.id}">` +
-        sw.map(s => `<button type="button" class="swatch" role="radio" style="--c:${s.hex}" data-hex="${s.hex}" aria-label="${esc(s.name)}" title="${esc(s.name)}" aria-checked="${s.hex.toUpperCase() === cur}"></button>`).join('') +
-        `<span class="swatch custom" role="radio" aria-checked="${!inList}" title="Custom colour" ${!inList ? `style="--c:${cur};background:${cur}"` : ''}><input type="color" value="${cur.toLowerCase()}" aria-label="Custom ${esc(r.label.toLowerCase())} colour" data-role="${r.id}"></span></div></div>`;
+      const same = r.follows ? `<button type="button" class="swatch match" role="radio" style="--c:${cur}" data-hex="" aria-label="Same as the ${esc(r.followName)}" title="Same as the ${esc(r.followName)}" aria-checked="${follow}"></button>` : '';
+      html += `<div class="p3-color"><div class="field-label" id="p3r-${r.id}">${esc(r.label)} <span class="p3-cname">${esc(follow ? `Same as the ${r.followName}` : swatchName(cur))}</span></div>
+        <div class="swatches" role="radiogroup" aria-labelledby="p3r-${r.id}" data-role="${r.id}">` + same +
+        sw.map(s => `<button type="button" class="swatch" role="radio" style="--c:${s.hex}" data-hex="${s.hex}" aria-label="${esc(s.name)}" title="${esc(s.name)}" aria-checked="${!follow && s.hex.toUpperCase() === cur}"></button>`).join('') +
+        `<span class="swatch custom" role="radio" aria-checked="${!follow && !inList}" title="Custom colour" ${!follow && !inList ? `style="--c:${cur};background:${cur}"` : ''}><input type="color" value="${cur.toLowerCase()}" aria-label="Custom ${esc(r.label.toLowerCase())} colour" data-role="${r.id}"></span></div></div>`;
     }
-    if (st.product === 'litho') html += '<p class="helper">One colour only: a lithophane’s picture is light shining through thicker and thinner plastic, so a second colour would hide it. White shows it best.</p>';
-    if (st.product === 'wire') html += '<p class="helper">One colour: the wire and its stand print from the same filament.</p>';
+    if (st.product === 'litho') html += `<p class="helper">The panel stays one light colour: its picture is light shining through thicker and thinner plastic, and white shows it best.${hasStand() ? ' The stand can be any colour: it prints below the panel, so a second colour costs one filament change.' : ''}</p>`;
+    if (st.product === 'wire' && hasStand()) html += '<p class="helper">A stand in its own colour prints on a second plate, so neither plate needs a filament change.</p>';
     $('p3Colors').innerHTML = html;
     const bdSel = $('p3Backdrop');
     for (const b of bdSel.querySelectorAll('[data-v]')) b.setAttribute('aria-checked', b.dataset.v === st.backdrop);
     showColorWarnings();
   }
   function setColor(role, hex, { rerender = true } = {}) {
-    colors()[role] = hex.toUpperCase();
+    colors()[role] = hex ? hex.toUpperCase() : null;   // null: a stand follows the main colour again
     persist();
     if (rerender) renderColors(); else showColorWarnings();
     if (st.result) { showView(); showReport(); }
@@ -513,9 +534,9 @@ export function createPrint3DDialog(ctx) {
    *  layer and a purge each time, so each plate prints in one filament instead). */
   function plateOf(p) {
     const c = colors(), f = fitInfo();
-    if (st.product === 'plaque' && /^Stand/.test(p.name) && (!f?.layout || !same(c.base, c.line))) return 2;
+    if (st.product === 'plaque' && /^Stand/.test(p.name) && (!f?.layout || !same(c.base, c.line) || !same(c.base, c.stand || c.base))) return 2;
     if (st.product === 'cutter' && /^Stamp/.test(p.name) && (!f?.layout || !same(c.cutter, c.stamp))) return 2;
-    if (st.product === 'wire' && /^Stand/.test(p.name) && !f?.layout) return 2;
+    if (st.product === 'wire' && /^Stand/.test(p.name) && (!f?.layout || !same(c.line, c.stand || c.line))) return 2;
     return 1;
   }
   function platePlan() {
@@ -523,9 +544,10 @@ export function createPrint3DDialog(ctx) {
     const f = fitInfo(), c = colors();
     let why = '';
     if (two.length) {
-      const what = st.product === 'cutter' ? 'the stamp' : 'the feet';
-      why = !f?.layout ? `${what} do not fit beside the main piece, so they print on plate 2.`
-        : `${what} print on plate 2 in ${swatchName(st.product === 'cutter' ? c.stamp : c.base).toLowerCase()}, so each plate needs one filament change at most.`;
+      const what = st.product === 'cutter' ? 'the stamp' : st.product === 'wire' ? 'the stand' : 'the feet';
+      const col = st.product === 'cutter' ? c.stamp : P.roleColor(st.product, c, 'stand');
+      why = !f?.layout ? `${what} ${st.product === 'plaque' ? 'do' : 'does'} not fit beside the main piece, so ${st.product === 'plaque' ? 'they print' : 'it prints'} on plate 2.`
+        : `${what} ${st.product === 'plaque' ? 'print' : 'prints'} on plate 2 in ${swatchName(col).toLowerCase()}, so each plate needs one filament change at most.`;
       why = why[0].toUpperCase() + why.slice(1);
     }
     return { plates: two.length ? 2 : 1, why };
@@ -578,6 +600,12 @@ export function createPrint3DDialog(ctx) {
     if (carried.length) know.push(`Set in the 3MF for Bambu Studio and OrcaSlicer: ${carried.join(', ')}. In other slicers set these by hand.`);
     know.push('Supports: none needed.');
     if (st.product === 'litho') know.push(set.orientation === 'flat' ? 'Printed flat: no brim needed.' : 'Brim: 5 mm, set in the 3MF (it stands on a narrow foot).');
+    if (lithoTwo()) {
+      const c = colors(), zc = set.colorChangeAtMm, layer = Math.round(zc / (set.layer || 0.2)) + 1;
+      know.push(printer().multi === 'ams'
+        ? `Two filaments: the foot is filament 2 (${swatchName(P.roleColor('litho', c, 'stand')).toLowerCase()}), the panel filament 1 (${swatchName(c.panel).toLowerCase()}), set per part in the 3MF. The foot lies wholly below the panel, so the AMS changes once, after Z ${zc} mm.`
+        : `Colour change after Z ${zc} mm (the panel from layer ${layer}): start with the ${swatchName(P.roleColor('litho', c, 'stand')).toLowerCase()} filament for the foot, then swap to ${swatchName(c.panel).toLowerCase()}. The 3MF marks the pause for Bambu Studio and OrcaSlicer; in other slicers add it on the layer slider.`);
+    }
     else know.push(st.product === 'wire' ? 'Brim: none needed on a textured PEI plate. If a line end lifts, add small mouse ears at the ends in the slicer.' : 'Brim: not needed.');
     if (st.product === 'plaque') {
       const zc = set.colorChangeAtMm || 2.4, layer = Math.round(zc / (set.layer || 0.2)) + 1;
@@ -631,7 +659,7 @@ export function createPrint3DDialog(ctx) {
     const noFit = ready && fitInfo()?.tooBig.length > 0;
     const w = $('p3Watch');
     w.disabled = !ready || noFit || !!film || filmOpening;
-    w.title = noFit ? `Does not fit the ${printer().name}: make it smaller to watch it print` : 'A timelapse of your printer printing it';
+    w.title = noFit ? `Does not fit the ${printer().name}: make it smaller to watch it print` : 'A timelapse of your piece being printed, layer by layer';
   }
   function download(bytes, name, type) {
     const blob = new Blob([bytes], { type });
@@ -644,12 +672,12 @@ export function createPrint3DDialog(ctx) {
   async function exportFile(format) {
     if (!st.result) return null;
     const parts = coloredParts().map(p => ({ name: p.name, color: p.color, slot: p.slot }));
-    const swap = st.product === 'plaque' && st.opts.plaque.twoColour === 'swap';
+    const swap = (st.product === 'plaque' && st.opts.plaque.twoColour === 'swap') || lithoSwap();
     const zc = st.result.settings?.colorChangeAtMm;
     const meta = { title: `Spiralist ${product().name}: ${artName()}`, designer: 'Spiralist', fileBase: fileBase(), layerMm: 0.2,
       // one object per piece with its print settings, on plate 1 or 2 of the chosen printer
       objects: objectPlan(parts), bed: { x: printer().bed.x, y: printer().bed.y },
-      ...(swap && zc ? { colorChanges: [{ atMm: zc, color: colors().line }] } : {}) };
+      ...(swap && zc ? { colorChanges: [{ atMm: zc, color: st.product === 'litho' ? colors().panel : colors().line }] } : {}) };
     // one filament per colour: with a swap, everything prints from slot 1
     if (swap) for (const p of parts) p.slot = 1;
     const t0 = performance.now();
@@ -709,7 +737,7 @@ export function createPrint3DDialog(ctx) {
     try {
       film = await mod.openPrintTimelapse({
         parts, colors: { ...c, base: main, ink, backdrop: P.backdropById(backdropId()).tone },
-        printer: printer(), filament: st.material, changeMode: swapMode ? 'manual' : 'ams',
+        printer: printer(), filament: st.material, changeMode: swapMode || lithoSwap() ? 'manual' : 'ams',
         product: { id: st.product, product: product(), settings, sizeMm: st.result.sizeMm, estimate: st.estimate },
         art: { title: `${modeName} · ${ctx.photoName || 'drawing'}`, fileBase: `spiralist-${artName()}` },
         notes: [plan.plates > 1 ? `Plate 1 of 2: ${plan.why}` : '', warn ? `Colour warning: ${warn.text}` : ''].filter(Boolean),
@@ -750,12 +778,10 @@ export function createPrint3DDialog(ctx) {
     // compile the viewer's shaders (a one-off second or so) while the worker builds the first mesh
     if (!viewer) requestAnimationFrame(() => setTimeout(ensureViewer, 0));
     if (!keep) {
-      const first = PRODUCTS.find(p => av[p.id].ok && av[p.id].best) || PRODUCTS.find(p => av[p.id].ok);
+      const first = OFFERED.find(p => av[p.id].ok && av[p.id].best) || OFFERED.find(p => av[p.id].ok) || OFFERED[0];
       st.product = null; selectProduct(first.id);
     } else { selectProductUI(); showResult(); }
     $('p3Saved').textContent = '';
-    // Line art already knows its subject: the cutter card says at once whether it is a cookie shape
-    if (st.kind === 'lineart' && silKnown() === undefined) silhouetteFor(true).then(s => { if (dlg.open && ctx.geom === g) refreshCutterCard(s); });
   }
   function selectProductUI() {
     for (const b of $('p3Cards').querySelectorAll('[data-v]')) { const on = b.dataset.v === st.product; b.setAttribute('aria-checked', on); b.tabIndex = on ? 0 : -1; }

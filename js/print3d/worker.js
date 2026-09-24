@@ -55,8 +55,11 @@ function build(product, geom, opts) {
   // a standing lithophane on a bed slinger: turn it 90 degrees about Z so its thin side runs along X
   // and the bed's Y moves shake it along its strong (wide) direction, not its weak one
   if (product === 'litho' && out.settings?.orientation === 'standing' && opts.bedslinger) {
+    // (about the bounds of all the parts together, so a panel and its foot stay joined)
+    const all = out.parts.map(p => bounds(p.mesh));
+    const b = { x: [Math.min(...all.map(q => q.x[0])), Math.max(...all.map(q => q.x[1]))], y: [Math.min(...all.map(q => q.y[0])), Math.max(...all.map(q => q.y[1]))] };
     for (const p of out.parts) {
-      const P = p.mesh.positions, b = bounds(p.mesh);
+      const P = p.mesh.positions;
       const nP = new Float32Array(P.length);
       for (let v = 0; v < P.length; v += 3) { nP[v] = b.y[1] - P[v + 1]; nP[v + 1] = P[v] - b.x[0]; nP[v + 2] = P[v + 2]; }   // (x, y) -> (-y, x): a rotation, faces keep their winding
       p.mesh = { ...p.mesh, positions: nP };

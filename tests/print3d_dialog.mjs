@@ -1,6 +1,8 @@
 // Drive the app's real 3D print dialog headless: every mode x product, screenshots and exports.
-//   node tests/print3d_dialog.mjs [--modes spiral,contour,real,lineart] [--products plaque,wire,litho,cutter]
+//   node tests/print3d_dialog.mjs [--modes spiral,contour,real,lineart] [--products plaque,wire]
 //        [--mobile] [--theme light|dark] [--export] [--port 8830] [--tag x]
+// The app offers the relief plaque and the wire sculpture. Realistic mode does not open the dialog: it
+// shows a toast that offers Line art, and the run checks that instead.
 // Writes shots/p3_<tag?><mode>_<product>_<desk|mob>_<theme>.png, and with --export the dialog's own
 // files to shots/print3d/dlg_<mode>_<product>.3mf / .stl|.zip, plus shots/print3d/dlg_report.json.
 // Prints console errors (the run fails when there are any).
@@ -15,7 +17,7 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const has = k => args.includes('--' + k);
 const port = +opt('port', 8830);
 const modes = opt('modes', 'spiral,contour,real,lineart').split(',');
-const products = opt('products', 'plaque,wire,litho,cutter').split(',');
+const products = opt('products', 'plaque,wire').split(',');
 const mobile = has('mobile'), theme = opt('theme', 'light'), doExport = has('export'), tag = opt('tag', '');
 const extra = opt('eval', '');   // JS run after each product is selected (e.g. colour tests)
 fs.mkdirSync('shots/print3d', { recursive: true });
@@ -55,6 +57,19 @@ for (const mode of modes) {
   } else if (mode === 'lineart') {
     await page.evaluate(() => { SP.setMode('lineart'); SP.setLineStyle('matisse'); });
     await idle(() => SP.geom?.path === 'lineart' && !SP.building);
+  }
+  if (mode === 'real') {
+    // plotter styles are not printable: a toast offers Line art and the dialog stays shut
+    await page.evaluate(() => SP.openPrint3d());
+    await page.waitForTimeout(400);
+    const r = await page.evaluate(() => ({ open: !!document.getElementById('p3Dialog')?.open,
+      toast: document.querySelector('#toasts .toast')?.textContent.trim().replace(/\s+/g, ' ') || '' }));
+    const ok = !r.open && /Line art/.test(r.toast);
+    if (!ok) errors.push(`[real] expected the Line art toast and no dialog, got ${JSON.stringify(r)}`);
+    report.push({ mode, product: null, available: false, reason: r.toast });
+    console.log(mode, ok ? 'toast, no dialog:' : 'WRONG:', r.toast);
+    await page.evaluate(() => document.querySelectorAll('#toasts .toast').forEach(t => t.remove()));
+    continue;
   }
   await page.evaluate(() => SP.openPrint3d());
   await idle(() => SP.print3d && document.getElementById('p3Dialog').open);

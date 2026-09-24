@@ -1,5 +1,5 @@
 // Print timelapse: a film of the product being printed, layer by layer, like a printer's own
-// timelapse. The nozzle traces the real toolpath (toolpath.js, or a dropped G-code via gcode.js),
+// timelapse. The print grows along the real toolpath (toolpath.js, or a dropped G-code via gcode.js),
 // plastic appears as extruded beads in the chosen filament colours, the bed or the head moves like
 // the chosen printer, the first colour change gets its own pause, and a counter shows the layer, Z
 // and the estimated print time.
@@ -15,9 +15,10 @@
 //   renderPrintFilm(film, { width, height, signal, onProgress }) -> encodeVideo result (MP4 blob)
 //
 // Rendering: WebGL2, one instanced draw for all beads (a static buffer; the vertex shader grows the
-// bead being extruded and hides the future ones from the print clock), a procedural textured-PEI
-// plate, a simple toolhead and gantry. The HUD is drawn with Canvas 2D on top, in a dark panel so it
-// reads on any backdrop.
+// bead being extruded and hides the future ones from the print clock) on a procedural textured-PEI
+// plate. No toolhead or gantry by default (opts.head: true draws them): the print itself grows on a
+// still plate, the layer being printed a little brighter. The HUD is drawn with Canvas 2D on top, in
+// a dark panel so it reads on any backdrop.
 import { buildToolpath, filmTimeMap, nozzleAt, layerAt, clock, formatDuration, resolvePrinter, PRINTERS, FILAMENTS } from './toolpath.js';
 import { PRINTERS as PRESETS } from './presets.js';
 
@@ -134,33 +135,26 @@ precision highp float;
 in vec3 vN; in vec3 vP; in vec3 vC; out vec4 o;
 ${LIGHT}
 void main() { o = vec4(toSRGB(shade(vC, normalize(vN), vP, 0.25, 0.0)), 1.0); }`;
+// the surface the print stands on: no printer bed, a seamless studio floor in the backdrop's colour
+// that fades into the backdrop far from the print (no edge anywhere), with a soft contact shadow
 const PLATE_VS = `#version 300 es
 layout(location=0) in vec2 aP;
-uniform mat4 uVP; uniform vec3 uBedOff; uniform vec2 uBed;
+uniform mat4 uVP; uniform vec3 uBedOff; uniform vec2 uC; uniform float uR;
 out vec2 vB; out vec3 vP;
-void main() { vec2 b = mix(vec2(-14.0), uBed + 14.0, aP); vB = b; vP = vec3(b, 0.0) + uBedOff; gl_Position = uVP * vec4(vP, 1.0); }`;
+void main() { vec2 b = uC + (aP * 2.0 - 1.0) * uR * 40.0; vB = b; vP = vec3(b, 0.0) + uBedOff; gl_Position = uVP * vec4(vP, 1.0); }`;
 const PLATE_FS = `#version 300 es
 precision highp float;
 in vec2 vB; in vec3 vP; out vec4 o;
-uniform vec2 uBed; uniform vec3 uPlate; uniform float uGrit;
+uniform vec3 uFloor; uniform vec3 uBack; uniform vec2 uC; uniform float uR; uniform vec2 uFoot;
 ${LIGHT}
-float h(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float vnoise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(h(i), h(i + vec2(1, 0)), f.x), mix(h(i + vec2(0, 1)), h(i + vec2(1, 1)), f.x), f.y); }
 void main() {
-  bool on = vB.x >= 0.0 && vB.y >= 0.0 && vB.x <= uBed.x && vB.y <= uBed.y;
-  vec3 base;
-  if (on) {
-    float fw = max(fwidth(vB.x), fwidth(vB.y));
-    float g = mix(vnoise(vB * 3.1) * 0.6 + vnoise(vB * 9.7) * 0.4, 0.5, smoothstep(0.08, 0.4, fw));
-    base = uPlate * (1.0 - uGrit * 0.5 + uGrit * g);
-    vec2 q = abs(fract(vB / 50.0 + 0.5) - 0.5) * 50.0;
-    float line = 1.0 - smoothstep(0.0, max(0.25, fw * 1.2), min(q.x, q.y));
-    base *= 1.0 - line * 0.06;
-    float edge = min(min(vB.x, vB.y), min(uBed.x - vB.x, uBed.y - vB.y));
-    base *= 0.82 + 0.18 * smoothstep(0.0, 3.0, edge);
-  } else base = vec3(0.035, 0.036, 0.04);
-  o = vec4(toSRGB(shade(base, vec3(0.0, 0.0, 1.0), vP, on ? 0.10 : 0.05, 0.0)), 1.0);
+  float d = length(vB - uC);
+  // soft contact shadow under the print's footprint (an ellipse of its size on the floor)
+  vec2 q = (vB - uC) / max(uFoot, vec2(1.0));
+  float shadow = 1.0 - 0.28 * exp(-2.2 * dot(q, q));
+  vec3 lit = toSRGB(shade(uFloor * shadow, vec3(0.0, 0.0, 1.0), vP, 0.04, 0.0));
+  float fade = smoothstep(uR * 1.4, uR * 7.0, d);
+  o = vec4(mix(lit, uBack, fade), 1.0);
 }`;
 
 function program(gl, vs, fs) {
@@ -255,6 +249,10 @@ export function createPrintFilm(tp, opts = {}) {
   const firstCol = palette[tp.beads.c[0] ?? 0] || palette[0];
   const plateHex = contrastRatio(firstCol, '#B8995A') >= 1.45 ? '#B8995A' : '#303134';
   const plateLin = srgbLin(plateHex);
+  // the floor is the backdrop's own colour (a seamless studio), lit by the same key light; far from
+  // the print it fades to exactly the clear colour, so there is no horizon line or edge
+  const floorLin = srgbLin(backdrop.color).map(v => v * 0.92);
+  const backSrgb = bdLin.map(lin).map(v => Math.pow(v / (1 + v * 0.15), 1 / 2.2));
 
   // --- beads (one interleaved instance buffer: p0 3, p1 3, t 2, meta 3 = 11 floats)
   const nb = tp.beads.n, inst = new Float32Array(Math.max(1, nb) * 11);
@@ -308,6 +306,7 @@ export function createPrintFilm(tp, opts = {}) {
   const start = [bed[0] / 2, bed[1] / 2, (tp.zBase || 0) + 8];
   const H = tp.layerMm || 0.2, HW = (tp.lineMm || 0.42) * 0.56;
   const CAMERAS = ['orbit', 'printer', 'nozzle'];
+  const showHead = opts.head === true;
   let camera = CAMERAS.includes(opts.camera) ? opts.camera : 'orbit';
   // the viewer's own turn and zoom on top of the film's camera (in-app only, never in an export):
   // a drag turns it, the wheel or a pinch zooms, a reset hands the camera back to the film
@@ -334,7 +333,8 @@ export function createPrintFilm(tp, opts = {}) {
     const [nx, ny, nz] = st.noz;
     const settle = st.phase === 'outro' ? 1 : smooth(2.5, 9, st.perFrame);   // the finished part rests in frame
     let bedOff = [0, 0, 0], headW = [nx, ny, nz];
-    if (printer.kin === 'bedslinger') {
+    if (!showHead) { /* no head: the plate stays still and the part grows up from it */ }
+    else if (printer.kin === 'bedslinger') {
       // the X gantry never moves in Y on a bed slinger: slow, the bed slides under the head; fast,
       // it parks like Bambu's smooth timelapse (the bed forward, the part clear of the gantry, the
       // head at the left purge chute) and each layer appears between two parked frames
@@ -353,21 +353,23 @@ export function createPrintFilm(tp, opts = {}) {
     let eye, target;
     if (camera === 'orbit') {
       const u = st.film / map.D;
-      const yaw = (thin ? faceYaw - 20 + 28 * u + (st.phase === 'outro' ? 12 * smooth(0, 1, st.u) : 0)
-        : -32 + 46 * u + (st.phase === 'outro' ? 40 * smooth(0, 1, st.u) : 0)) * DEG;
+      // the finished piece ends on a readable view: a flat print (plaque, wire) straight from the
+      // front and well above it, so the drawing reads the right way up; a tall part keeps turning
+      const out = st.phase === 'outro' ? smooth(0, 1, st.u) : 0;
+      const yaw = (thin ? faceYaw - 20 + 28 * u + 12 * out
+        : tall ? -32 + 46 * u + 40 * out : mix(-32 + 46 * u, 0, out)) * DEG;
       const zoomT = smooth(0, 1, (st.film - map.intro * 0.5) / (map.intro + map.P * 0.35));
-      // a low nozzle-cam at the start (under the toolhead's shell), rising as it pulls back
-      const pitch = mix(tall ? 12 : 17, tall ? 15 : 36, zoomT) * DEG;
+      // low and close at the start, rising as it pulls back
+      const pitch = mix(mix(tall ? 12 : 17, tall ? 15 : 36, zoomT), tall ? 15 : 56, tall ? 0 : out) * DEG;
       const k = mix(tall ? 0.6 : 0.5, 0.92, zoomT);
       const nb = [nx, ny, Math.max(nz, 0.5)];
       const tgt = [mix(nb[0], C[0], zoomT), mix(nb[1], C[1], zoomT), mix(nb[2] + 2, C[2], zoomT)];
       target = [tgt[0] + bedOff[0], tgt[1] + bedOff[1], tgt[2] + bedOff[2]];
-      const d = fit * k;
+      const d = fit * (tall ? k : mix(k, 1.18, out));   // a flat print ends whole in frame, clear of the counter
       eye = [target[0] + d * Math.cos(pitch) * Math.sin(yaw), target[1] - d * Math.cos(pitch) * Math.cos(yaw), target[2] + d * Math.sin(pitch)];
     } else if (camera === 'nozzle') {
-      // close on the plastic being laid (the toolpath's point now, even while a fast bed slinger
-      // film parks the head), low enough to look under the hotend's shell, slowly turning; at the
-      // end it pulls back to the whole part
+      // close-up on the plastic being laid (the toolpath's point now), slowly turning; at the end it
+      // pulls back to the whole part
       const u = st.film / map.D;
       const yaw = ((thin ? faceYaw : -40) + 22 * Math.sin(u * Math.PI * 2)) * DEG, pitch = 24 * DEG;
       const out = st.phase === 'outro' ? smooth(0, 1, st.u) : 0;
@@ -376,7 +378,8 @@ export function createPrintFilm(tp, opts = {}) {
       const d = mix(Math.max(42, fit * 0.3), fit * 0.9, out);
       eye = [target[0] + d * Math.cos(pitch) * Math.sin(yaw), target[1] - d * Math.cos(pitch) * Math.cos(yaw), target[2] + d * Math.sin(pitch)];
     } else {
-      const yaw = (thin ? faceYaw - 30 : -38) * DEG, pitch = (tall ? 14 : 30) * DEG;
+      // "Front": straight at the drawing (a flat print from the front and above; a panel at its face)
+      const yaw = (thin ? faceYaw : tall ? -38 : 0) * DEG, pitch = (tall ? 14 : 48) * DEG;
       target = [C[0], C[1], printer.kin === 'bedslinger' ? C[2] : zTop * 0.5];
       const d = fit * (printer.kin === 'bedslinger' ? 1.22 : 1.12);
       eye = [target[0] + d * Math.cos(pitch) * Math.sin(yaw), target[1] - d * Math.cos(pitch) * Math.cos(yaw), target[2] + d * Math.sin(pitch)];
@@ -397,10 +400,12 @@ export function createPrintFilm(tp, opts = {}) {
       gl.uniformMatrix4fv(pr.u.uVP, false, VP);
       gl.uniform3fv(pr.u.uEye, eye); gl.uniform3fv(pr.u.uKey, key);
     };
-    // plate
+    // the floor (no printer bed): the backdrop's colour, lit, fading into the backdrop
     common(plateP);
-    gl.uniform3fv(plateP.u.uBedOff, bedOff); gl.uniform2fv(plateP.u.uBed, bed);
-    gl.uniform3fv(plateP.u.uPlate, plateLin); gl.uniform1f(plateP.u.uGrit, plateHex === '#B8995A' ? 0.22 : 0.1);
+    gl.uniform3fv(plateP.u.uBedOff, bedOff);
+    gl.uniform2fv(plateP.u.uC, [C[0], C[1]]); gl.uniform1f(plateP.u.uR, R);
+    gl.uniform2fv(plateP.u.uFoot, [Math.max(6, ext[0] * 0.62), Math.max(6, ext[1] * 0.62)]);
+    gl.uniform3fv(plateP.u.uFloor, floorLin); gl.uniform3fv(plateP.u.uBack, backSrgb);
     gl.disable(gl.CULL_FACE);
     gl.bindVertexArray(plateVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.enable(gl.CULL_FACE);
@@ -416,7 +421,8 @@ export function createPrintFilm(tp, opts = {}) {
       gl.drawElementsInstanced(gl.TRIANGLES, geo.i.length, gl.UNSIGNED_SHORT, 0, count);
       gl.disable(gl.POLYGON_OFFSET_FILL);
     }
-    // toolhead, X gantry (and the Y rail under a bedslinger's bed)
+    // toolhead, X gantry (and the Y rail under a bedslinger's bed): only when asked for
+    if (showHead) {
     common(solidP);
     gl.uniform3fv(solidP.u.uOff, headW); gl.uniform3fv(solidP.u.uScale, [1, 1, 1]);
     gl.bindVertexArray(head.vao); gl.drawArrays(gl.TRIANGLES, 0, head.count);
@@ -430,6 +436,7 @@ export function createPrintFilm(tp, opts = {}) {
     if (printer.kin === 'bedslinger') {
       gl.uniform3fv(solidP.u.uOff, [bed[0] / 2 - 30, -60, -26]); gl.uniform3fv(solidP.u.uScale, [60, bed[1] + 120, 14]);
       gl.bindVertexArray(yrail.vao); gl.drawArrays(gl.TRIANGLES, 0, yrail.count);
+    }
     }
     gl.bindVertexArray(null);
     return { eye, target, bedOff, headW, count };
@@ -526,7 +533,7 @@ function drawHud(g, W, H, st, tp, info, opts) {
 
   // banners
   let banner = null, sub2 = null;
-  if (st.phase === 'intro') { banner = `Heating · nozzle ${tp.filament?.nozzleC || 255} °C · bed ${tp.filament?.bedC || 70} °C`; }
+  if (st.phase === 'intro') { /* the first second: the empty floor, the camera close where it starts */ }
   else if (st.phase === 'change' || (st.phase === 'print' && inChange(tp, st.t))) {
     const c = tp.changes.find(c => st.t >= c.t0 && st.t <= c.t1) || tp.changes[0];
     banner = { from: c.from, to: c.to, text: 'Filament change', note: `${formatDuration(c.t1 - c.t0, { seconds: true })} pause at Z ${c.z.toFixed(1)} mm` };
@@ -622,7 +629,7 @@ const CSS = `
  *   openPrintTimelapse({ parts, colors, printer, product, art }) -> { close }
  */
 export function openPrintTimelapse({ parts, colors = {}, printer, product, art, filament, camera = 'orbit', seconds = 15, fps = 30, format = 'square', changeMode, notes = [], onToolpath } = {}) {
-  // reduced motion: start paused on the fixed printer cam; Play starts it
+  // reduced motion: start paused on the fixed front camera; Play starts it
   const still = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (still) camera = 'printer';
   if (!document.getElementById('ptl-style')) {
@@ -648,11 +655,11 @@ export function openPrintTimelapse({ parts, colors = {}, printer, product, art, 
     </div>
     <div class="ptl-side">
       <div><h2>Watch it print</h2><p class="ptl-sum">${productName}${artTitle ? ' · ' + artTitle : ''}</p>
-        <p class="ptl-hint">Your printer building it, layer by layer, right here. Drag to look around, scroll or pinch to zoom, double-click to reset the view.<span class="ptl-keys"> Space plays or pauses; the arrow keys step one layer.</span></p></div>
+        <p class="ptl-hint">Your piece being printed, layer by layer, right here. Drag to look around, scroll or pinch to zoom, double-click to reset the view.<span class="ptl-keys"> Space plays or pauses; the arrow keys step one layer.</span></p></div>
       <div class="ptl-play"><button class="ptl-btn ptl-pp" type="button" aria-label="${still ? 'Play' : 'Pause'}">${still ? '▶' : '❚❚'}</button><input class="ptl-scrub" type="range" min="0" max="1000" value="0" aria-label="Position in the print" style="--fill:0%"></div>
       <p class="ptl-note ptl-pos"></p>
       <div class="ptl-row"><span>Whole print in</span><div class="ptl-seg" data-k="speed"><button data-v="15">15 s</button><button data-v="30">30 s</button><button data-v="60">1 min</button><button data-v="180">3 min</button></div></div>
-      <div class="ptl-row"><span>Camera</span><div class="ptl-seg" data-k="camera"><button data-v="orbit">Orbit</button><button data-v="printer">Printer cam</button><button data-v="nozzle">Nozzle</button></div></div>
+      <div class="ptl-row"><span>Camera</span><div class="ptl-seg" data-k="camera"><button data-v="orbit">Orbit</button><button data-v="printer">Front</button><button data-v="nozzle">Close-up</button></div></div>
       <div class="ptl-row"><span>Printer</span><select class="ptl-printer" aria-label="Printer">${PRESETS.map(p => `<option value="${p.id}">${p.name} (${p.kinematics === 'corexy' ? 'CoreXY' : 'bed slinger'})</option>`).join('')}</select></div>
       <p class="ptl-note ptl-info"></p>
       <label class="ptl-drop" tabindex="0">Replay your own sliced file: drop a .gcode or .gcode.3mf here<input type="file" accept=".gcode,.3mf,.gco,.g" hidden></label>

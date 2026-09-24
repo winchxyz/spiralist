@@ -109,24 +109,34 @@ export function bestBackdrop(hex) {
 
 /**
  * The colours a product is printed in. roles: which pickers the dialog shows.
- *  plaque: base (plate + feet, the "background") and line (the raised line, the "ink")
- *  wire:   line (wire + stand); the backdrop is its background
- *  litho:  panel only (one colour: the picture is light through thicker and thinner plastic)
+ *  plaque: base (the plate, the "background"), line (the raised line, the "ink") and stand (the feet)
+ *  wire:   line (the wire) and stand; the backdrop is its background
+ *  litho:  panel (one light colour: the picture is light through thicker and thinner plastic) and
+ *          stand (the foot, wholly below the panel, so its own colour costs one filament change)
  *  cutter: cutter and stamp
+ * A role with `follows` has no colour of its own until one is picked (null): it takes the colour of
+ * the role it follows ("Same as the plate").
  */
 export const ROLES = {
-  plaque: [{ id: 'base', label: 'Base (background)', parts: /^(Plate|Stand)/ }, { id: 'line', label: 'Line (ink)', parts: /^Line/ }],
-  wire: [{ id: 'line', label: 'Wire (ink)', parts: /./ }],
-  litho: [{ id: 'panel', label: 'Panel', parts: /./ }],
+  plaque: [{ id: 'base', label: 'Base (background)', parts: /^Plate/ }, { id: 'line', label: 'Line (ink)', parts: /^Line/ },
+    { id: 'stand', label: 'Feet', parts: /^Stand/, follows: 'base', followName: 'plate' }],
+  wire: [{ id: 'line', label: 'Wire (ink)', parts: /^(?!Stand)/ }, { id: 'stand', label: 'Stand', parts: /^Stand/, follows: 'line', followName: 'wire' }],
+  litho: [{ id: 'panel', label: 'Panel (the picture)', parts: /^(?!Foot)/ }, { id: 'stand', label: 'Stand (foot)', parts: /^Foot/, follows: 'panel', followName: 'panel' }],
   cutter: [{ id: 'cutter', label: 'Cutter', parts: /^Cutter/ }, { id: 'stamp', label: 'Stamp', parts: /^Stamp/ }],
 };
 
 export const DEFAULT_COLORS = {
-  plaque: { base: '#FFFFFF', line: '#000000' },
-  wire: { line: '#000000' },
-  litho: { panel: '#FFFFFF' },
+  plaque: { base: '#FFFFFF', line: '#000000', stand: null },
+  wire: { line: '#000000', stand: null },
+  litho: { panel: '#FFFFFF', stand: null },
   cutter: { cutter: '#FF6A13', stamp: '#FF6A13' },   // one filament: two colours on one plate cost an AMS swap per layer
 };
+
+/** A role's colour: its own, or the one of the role it follows. */
+export function roleColor(product, colors, id) {
+  const r = (ROLES[product] || []).find(x => x.id === id);
+  return (colors && colors[id]) || (r?.follows && colors?.[r.follows]) || DEFAULT_COLORS[product]?.[r?.follows || id] || '#FFFFFF';
+}
 
 /** The colour the whole object mostly reads as (for the backdrop check). */
 export function dominantColor(product, colors) {
@@ -140,7 +150,7 @@ export function colorParts(product, parts, colors) {
   const slots = [];
   return parts.map(p => {
     const role = roles.find(r => r.parts.test(p.name)) || roles[0];
-    const color = (role && colors[role.id]) || p.color;
+    const color = (role && (colors[role.id] || (role.follows && colors[role.follows]))) || p.color;
     let slot = slots.indexOf(color.toUpperCase()) + 1;
     if (!slot) { slots.push(color.toUpperCase()); slot = slots.length; }
     return { ...p, color, slot, role: role?.id };
@@ -162,6 +172,10 @@ export function colorWarnings(product, colors, backdropId, material = 'petg') {
   if (product === 'cutter' && colors.stamp && String(colors.stamp).toUpperCase() !== String(colors.cutter).toUpperCase()) {
     out.push({ kind: 'plates', level: 'note', text: 'Two colours: the stamp goes on a second plate in the 3MF, so each plate prints in one filament with no swaps.',
       fix: { role: 'stamp', value: colors.cutter, label: 'Use one colour' } });
+  }
+  if (product === 'litho' && colors.stand && String(colors.stand).toUpperCase() !== String(colors.panel).toUpperCase()) {
+    out.push({ kind: 'stand', level: 'note', text: 'Two colours: the foot prints first in its own colour, then one filament change where the foot ends and the panel begins.',
+      fix: { role: 'stand', value: null, label: 'Same as the panel' } });
   }
   if (product === 'litho' && lab(colors.panel)[0] < 80) {
     out.push({ kind: 'litho', level: lab(colors.panel)[0] < 55 ? 'bad' : 'weak', text: 'A lithophane needs light to pass through: dark or strong colours block it and the picture stays hidden.',

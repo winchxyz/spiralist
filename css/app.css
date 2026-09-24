@@ -337,6 +337,9 @@ body.welcoming .transport, body.welcoming .stage-tools { visibility: hidden; }
 .swatch.photo { background: conic-gradient(#e0533c, #f2b134, #5fb04a, #3a8fd9, #8b5bd6, #e0533c); }
 body.realistic .swatch.photo { display: none; }   /* the real builders draw in one ink */
 .swatch.custom { background: conic-gradient(from 45deg, #bbb, #fff, #bbb, #fff, #bbb); display: grid; place-items: center; overflow: hidden; }
+/* "Same as the panel": the followed colour with a link mark, readable on any colour */
+.swatch.match { position: relative; }
+.swatch.match::before { content: '='; position: absolute; inset: 0; display: grid; place-items: center; font: 700 14px/1 var(--sans, system-ui); color: #fff; mix-blend-mode: difference; }
 .swatch.custom input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; border: 0; padding: 0; }
 .swatch-label { font-size: 12px; color: var(--text-muted); margin-left: 4px; }
 

@@ -36,7 +36,7 @@ async function openDialogAndPick(page) {
   await wait(() => SP.print3d && document.getElementById('p3Dialog').open);
   const id = await page.evaluate(() => {
     const s = SP.print3d, av = s.debug.availability(s.state.kind);
-    const id = av.plaque?.ok ? 'plaque' : 'litho';
+    const id = av.plaque?.ok ? 'plaque' : 'wire';
     s.debug.selectProduct(id);
     return id;
   });

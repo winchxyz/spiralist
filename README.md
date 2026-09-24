@@ -50,9 +50,9 @@ it works offline too.
 - **Cinematic films.** A macro of the nib touching the paper, a slow pull back, and the finished
   sheet on one of eight desks. Sign it with your name, then share it or post it on X.
 - **Exports.** PNG up to 8K, SVG in real millimetres for pen plotters, or straight to the clipboard.
-- **3D print your line.** Turn the drawing into a relief plaque, a wire sculpture, a lithophane or
-  a cookie cutter with a stamp, pick the filament colours, save a 3MF or STL for your printer, and
-  watch a timelapse of your printer building it.
+- **3D print your line.** Turn the drawing into a relief plaque or a wire sculpture, pick the
+  filament colours, save a 3MF or STL for your printer, and watch the piece being printed, layer by
+  layer.
 
 ## Line art
 
@@ -238,13 +238,13 @@ Full-quality MP4s of the films above are on the [Releases page](https://github.c
 ## 3D print your line
 
 **3D print** (next to Download, in the menu on a phone, or press **P**) turns the drawing into a
-file for a 3D printer. You pick one of four products, and the app offers a product only where it
-prints well for that drawing. Where it doesn't, the card says why and suggests one that does.
+file for a 3D printer: a relief plaque or a wire sculpture. The app offers a product only where it
+prints well for that drawing. Where it doesn't, the card says why and points to the one that does.
 
 <p align="center">
-  <img src="docs/print3d.jpg" alt="The four 3D print products, rendered in the app on a desk. A: a relief plaque, a black one-line portrait raised on a white plate with a black frame, and two white slotted feet. B: the same line as a black wire sculpture standing in a small black stand. C: a lithophane of a spiral portrait lit from behind, the face showing in shades of grey through a white panel. D: an orange cookie cutter in the outline of the head, next to a white stamp with the drawing raised on it and its handle." width="100%">
+  <img src="docs/print3d.jpg" alt="The two 3D print products, rendered in the app on a desk. A: a relief plaque, a black one-line portrait raised on a white plate with a black frame, and two white slotted feet. B: the same line as a black wire sculpture standing in a small black stand." width="100%">
   <br>
-  <sub>Renders from the app's own 3D preview. A, B and D are the Line art plaster bust; C is an Artistic spiral with a light behind it.</sub>
+  <sub>Renders from the app's own 3D preview of the Line art plaster bust.</sub>
 </p>
 
 - **A Relief plaque.** The line raised 1.2 mm on a 2.4 mm plate (plate Z 0-2.4, line Z 2.4-3.6 mm),
@@ -253,59 +253,55 @@ prints well for that drawing. Where it doesn't, the card says why and suggests o
 - **B Wire sculpture.** The one line itself, printed flat as a single piece, with a hanging loop or
   a slotted stand. The wire is 1.6 mm wide and 2.4 mm tall, and grows to 2.4 × 3.0 mm at 300 mm so
   a big one doesn't sag.
-- **C Lithophane.** A panel 0.8 to 3.2 mm thick that follows the drawing's darkness. It looks plain
-  white until a light is behind it. It prints standing on its foot (or flat), 60 to 200 mm tall.
-- **D Cookie cutter + stamp.** A cutter in the outline of the photo's subject, 12 mm tall with a
-  2.4 mm wall, plus a stamp that presses the lines into the dough and a push-fit handle. Thin
-  parts such as ears must come through the wall's rounding; when they would not, the report asks
-  for a bigger size.
 
 ### What prints well for which drawing
 
-| Drawing | A Plaque | B Wire | C Lithophane | D Cutter + stamp |
-|---|---|---|---|---|
-| Line art, and the Contour path | yes, the best pick | yes | yes | yes, with a clear subject |
-| Artistic Spiral, Wander, Maze | yes: a spiral is rebuilt with fewer, wider rings; Wander and Maze print as a textured relief | no: the line fuses into a disc | yes, the best pick | yes, stamp off by default |
-| Realistic | no: the lines fuse solid | no | yes, the best pick | yes, stamp off by default |
+| Drawing | A Plaque | B Wire |
+|---|---|---|
+| Line art, and the Contour path | yes, the best pick | yes |
+| Artistic Spiral, Wander, Maze | yes: a spiral is rebuilt with fewer, wider rings; Wander and Maze print as a textured relief | no: the line fuses into a disc |
+| Realistic | no | no |
 
-The cookie cutter needs one clear subject. A landscape, or a shape the finder is unsure of (a
-bicycle), gets a reason instead; tap the subject in Line art to give it one. Outside Line art the
-cutter uses the same silhouette models, so picking it the first time downloads them. With the stamp
-off, a dense drawing would only press a flat block.
+The Realistic plotter styles pack the line so tightly that it would print as one solid block. There
+**3D print** says so and offers to switch to Line art, which prints best.
 
 ### Colours you can see
 
 You pick the filament colour of each part from the Bambu PLA Basic or PETG Basic swatches, or any
 custom colour:
 
-- **Plaque:** Base (the background) and Line (the ink).
-- **Wire:** the wire.
-- **Cookie cutter:** the cutter and the stamp.
-- **Lithophane:** one colour only, and the dialog says why: its picture comes from light shining
-  through the plastic, so a second colour would only get in the way. White works best.
+- **Plaque:** Base (the background), Line (the ink) and, when it stands, the Feet. The feet match
+  the plate until you give them a colour of their own.
+- **Wire:** the wire and, when it stands, the Stand, which matches the wire until you give it one.
+
+Feet or a stand in their own colour print on a second plate, so no plate needs more than one
+filament change.
 
 The preview's backdrop is Auto, Textured PEI plate, Light wood desk, Studio white or Graphite;
 Auto picks one that stands out from the print. The defaults always contrast: a white plate with a
-black line, a black wire on the PEI plate, an orange cutter and stamp. When you pick two colours
-that are hard to tell apart (a black line on a black plate, yellow on white, a dark wire on the
-Graphite backdrop), the dialog warns you and offers a one-tap fix, such as "Use a white line" or a
-lighter plate. The 3MF and the timelapse use the colours you chose.
+black line, and a black wire. When you pick two colours that are hard to tell apart (a black line
+on a black plate, yellow on white, a dark wire on the Graphite backdrop), the dialog warns you and
+offers a one-tap fix, such as "Use a white line" or a lighter plate. The 3MF and the timelapse use
+the colours you chose.
 
 ### Watch it print
 
 <p align="center">
-  <img src="docs/print-timelapse.gif" width="440" alt="A print timelapse of the Line art relief plaque on a Bambu Lab A2L: the nozzle starts on the gold textured plate, the white plate fills in layer by layer with its infill showing, then the filament changes and the black line and frame rise on top, while a counter reads the layer, Z and the time, ending at layer 50 of 50, Z 10 mm, 1 h 29 min.">
+  <img src="docs/print-timelapse.gif" width="400" alt="A print timelapse of the Line art relief plaque, with no printer in view: the white plate grows layer by layer on a plain beige floor, then the black line and frame rise on top after a filament change, while a counter reads the layer, Z and the time, ending face on at layer 18 of 18, Z 3.6 mm, 1 h 21 min.">
+  <img src="docs/print-timelapse-wire.gif" width="400" alt="A print timelapse of the Line art wire sculpture: the black one-line portrait grows from the floor layer by layer, ending face on at layer 12 of 12, Z 2.4 mm, 20 min.">
   <br>
-  <sub>1 h 29 min of printing in 10 s on the A2L. Here one filament is swapped after Z 2.4 mm, so<br>
-  the feet printed alongside turn black too; with two AMS filaments they print white on their own plate.</sub>
+  <sub>The plaque (1 h 21 min of printing) and the wire (20 min), each in 10 s, saved from the app.</sub>
 </p>
 
-**Watch it print** plays a timelapse of your printer building the piece, like a camera in the
-printer. The piece is sliced into 0.2 mm layers with walls and infill, and you watch the nozzle lay
-each bead in your filament colours. On a bed slinger such as the A2L the bed slides back and forth;
-on a CoreXY printer it drops a layer at a time. A colour change pauses at its layer with a banner,
-and a counter shows the layer, Z and the time so far against the estimated total. The camera is a
-slow orbit or a fixed printer cam.
+**Watch it print** shows your piece being printed, and only the piece: no printer in the way, just
+the plastic growing layer by layer on a plain floor. It is sliced into 0.2 mm layers with walls
+and infill, and every bead appears in your filament colours. A colour change shows at its layer,
+and a counter shows the layer, Z and the time so far against the estimated total. At the end the
+camera comes round to the front, so you see the finished piece face on.
+
+It plays right in the app. Drag to turn it, scroll or pinch to zoom, double-click to reset the
+view, press Space to pause and the arrow keys to step one layer. Choose how long the whole print
+takes to play (15 s to 3 min) and the camera: Orbit, Front or Close-up.
 
 Save it as an MP4 in 9:16, 1:1 or 16:9, 10, 15 or 30 seconds, at 30 or 60 fps, then Download it or
 **Post on X**. You can also drop in a file you sliced yourself (G-code from Bambu Studio,
@@ -315,14 +311,14 @@ slicer's own clock. When the piece doesn't fit the printer, the button is off an
 ### Files: 3MF and STL
 
 - **3MF** for Bambu Studio and OrcaSlicer. Each part is its own object in its colour and filament
-  slot, and carries its print settings: 100% infill and a 5 mm brim for the lithophane, 3 walls
-  and 20% infill for the cutter. Parts that shouldn't share a plate go on a second one.
+  slot, and carries its print settings: 2 walls and 15% infill for the plaque, and solid infill
+  for the wire, which is only two perimeters wide. Parts that shouldn't share a plate go on a
+  second one.
 - **STL** saves one file per part, zipped when there are several.
 - **Two colours.** With an AMS, the plaque's line is filament 2 and the plate is filament 1; check
   in your slicer that the Line part shows filament 2. With one filament, choose **Swap after
   Z 2.4 mm**: the file asks for a pause there, and everything printed above it comes out in the
-  new colour. A cutter and stamp in one colour print together with no swaps; in two colours the
-  stamp goes on its own plate.
+  new colour.
 - **Sizes** are shown per part with their axis ranges, for example Plate X 0-110.8, Y 0-150,
   Z 0-2.4 mm, and the report lists what was changed so the drawing prints (lines thickened to
   0.8 mm, gaps merged, a spiral rebuilt) and what to know before printing.
@@ -331,23 +327,22 @@ slicer's own clock. When the piece doesn't fit the printer, the button is off an
 
 ### Printers
 
-The A2L is the default. The app warns you when a part doesn't fit the bed, and the timelapse moves
-the way that printer does.
+The A2L is the default. The app warns you when a part doesn't fit the bed, and the time estimate
+and the colour changes follow the printer you pick.
 
-| Printer | Bed | Moves by | Two colours by |
-|---|---|---|---|
-| Bambu Lab A1 mini | X 0-180, Y 0-180, Z 0-180 mm | bed slinger | AMS |
-| Bambu Lab A1 | X 0-256, Y 0-256, Z 0-256 mm | bed slinger | AMS |
-| Bambu Lab A2L | X 0-330, Y 0-320, Z 0-325 mm | bed slinger | AMS |
-| Bambu Lab P1S | X 0-256, Y 0-256, Z 0-256 mm | CoreXY | AMS |
-| Bambu Lab X1C | X 0-256, Y 0-256, Z 0-256 mm | CoreXY | AMS |
-| Prusa MK4 | X 0-250, Y 0-210, Z 0-220 mm | bed slinger | filament swap |
-| Prusa MINI+ | X 0-180, Y 0-180, Z 0-180 mm | bed slinger | filament swap |
-| Creality Ender-3 | X 0-220, Y 0-220, Z 0-250 mm | bed slinger | filament swap |
-| Generic 220 × 220 | X 0-220, Y 0-220, Z 0-250 mm | bed slinger | filament swap |
+| Printer | Bed | Two colours by |
+|---|---|---|
+| Bambu Lab A1 mini | X 0-180, Y 0-180, Z 0-180 mm | AMS |
+| Bambu Lab A1 | X 0-256, Y 0-256, Z 0-256 mm | AMS |
+| Bambu Lab A2L | X 0-330, Y 0-320, Z 0-325 mm | AMS |
+| Bambu Lab P1S | X 0-256, Y 0-256, Z 0-256 mm | AMS |
+| Bambu Lab X1C | X 0-256, Y 0-256, Z 0-256 mm | AMS |
+| Prusa MK4 | X 0-250, Y 0-210, Z 0-220 mm | filament swap |
+| Prusa MINI+ | X 0-180, Y 0-180, Z 0-180 mm | filament swap |
+| Creality Ender-3 | X 0-220, Y 0-220, Z 0-250 mm | filament swap |
+| Generic 220 × 220 | X 0-220, Y 0-220, Z 0-250 mm | filament swap |
 
-All with a 0.4 mm nozzle, in PETG Basic or PLA Basic. On a bed slinger the lithophane is turned so
-its thin side runs along X, not along the moving bed.
+All with a 0.4 mm nozzle, in PETG Basic or PLA Basic.
 
 ## How it works
 

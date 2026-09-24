@@ -98,13 +98,20 @@ test('fitsBed turns a part about Z but never tips it', () => {
 // the dialog's availability table (pure function; dialog.js touches the DOM only inside createPrint3DDialog)
 globalThis.matchMedia ??= () => ({ matches: false });
 const { availability, artKind } = await import('../js/print3d/dialog.js');
-test('availability: Line art and Contour offer all four; Realistic only C and D; spiral no wire', () => {
-  const ids = a => Object.entries(a).filter(([, v]) => v.ok).map(([k]) => k).join(',');
-  assert.equal(ids(availability('lineart')), 'plaque,wire,litho,cutter');
-  assert.equal(ids(availability('contour')), 'plaque,wire,litho,cutter');
-  assert.equal(ids(availability('real')), 'litho,cutter');
-  assert.equal(ids(availability('spiral')), 'plaque,litho,cutter');
-  for (const k of ['real', 'spiral', 'wander', 'maze', 'lineart', 'contour']) for (const [, v] of Object.entries(availability(k))) if (!v.ok) assert.ok(v.reason && v.suggest, k);
+// the app offers the relief plaque and the wire sculpture; Realistic never opens the dialog (a toast
+// offers Line art), so its rows only need a reason
+test('availability: Line art and Contour offer both products; spiral no wire; Realistic neither', () => {
+  const OFFERED = ['plaque', 'wire'];
+  const ids = a => OFFERED.filter(k => a[k].ok).join(',');
+  assert.equal(ids(availability('lineart')), 'plaque,wire');
+  assert.equal(ids(availability('contour')), 'plaque,wire');
+  assert.equal(ids(availability('real')), '');
+  assert.equal(ids(availability('spiral')), 'plaque');
+  for (const k of ['spiral', 'wander', 'maze', 'lineart', 'contour']) for (const id of OFFERED) {
+    const v = availability(k)[id];
+    if (!v.ok) assert.ok(v.reason && OFFERED.includes(v.suggest), `${k} ${id}`);
+  }
+  for (const id of OFFERED) assert.ok(availability('real')[id].reason, id);
   assert.equal(artKind({ real: {} }), 'real'); assert.equal(artKind({ path: 'lineart', lineart: {} }), 'lineart'); assert.equal(artKind({ path: 'wander' }), 'wander');
 });
 

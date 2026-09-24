@@ -2528,6 +2528,9 @@ $('mSave').addEventListener('click', () => openDownload());
 let print3d = null;
 async function openPrint3d() {
   if (!geom) return toast('Choose a photo first.');
+  // plotter styles pack the line far too tightly for a plaque or a wire: Line art prints best
+  if (realistic()) return toast('Plotter styles pack the line too tightly to 3D print. Line art prints best, as a relief plaque or a wire sculpture.',
+    { action: { label: 'Switch to Line art', run: () => setMode('lineart') }, ms: 9000 });
   if (!print3d) {
     const m = await import('./print3d/dialog.js');
     print3d = m.createPrint3DDialog({

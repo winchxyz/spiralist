@@ -1,5 +1,5 @@
 // End to end in the real app: Line art -> 3D print dialog -> "Watch it print" -> the print timelapse.
-//   node tests/print3d_film.e2e.mjs [--products plaque,wire,litho] [--port 8830] [--mobile]
+//   node tests/print3d_film.e2e.mjs [--products plaque,wire] [--port 8830] [--mobile]
 // Writes shots/print3d/film_e2e_<product>.png; fails on console errors or when the film does not start.
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
@@ -8,7 +8,7 @@ const { chromium } = require(PW);
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
-const port = +opt('port', 8830), products = opt('products', 'plaque,wire,litho').split(','), mobile = args.includes('--mobile');
+const port = +opt('port', 8830), products = opt('products', 'plaque,wire').split(','), mobile = args.includes('--mobile');
 const browser = await chromium.launch({ headless: true, args: ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const page = await browser.newPage(mobile ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true } : { viewport: { width: 1440, height: 940 } });
 const errors = [];

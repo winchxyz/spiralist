@@ -447,27 +447,43 @@ function buildLitho(geom, o) {
   const fcells = Math.round(frame / px), foot = stand ? Math.round((o.footMm ?? 6) / px) : 0;
   const T = new Float32Array(cw * ch);
   const gamma = o.gamma ?? 0.8;
+  // standing, the frame's bottom bar sits right above the foot: a full-thickness joint to stand on
+  const bottom = ch - foot;
   for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
-    const inFrame = x < fcells || y < fcells || x >= cw - fcells || y >= ch - fcells;
+    const inFrame = x < fcells || y < fcells || x >= cw - fcells || y >= bottom - fcells;
     let t = inFrame ? tMax + 0.8 : tMin + (tMax - tMin) * Math.pow(clamp(blurred[y * cw + x], 0, 1), gamma);
     if (stand && y >= ch - foot) t = footDepth;                               // bottom rows: the foot
     T[y * cw + x] = t;
   }
-  let mesh = K.heightfieldMesh(T, cw, ch, px, v => v);
   let fineFrac = fine / Math.max(1, tot);
+  let parts, footTopMm = 0;
   if (stand) {
-    // stand the panel up: panel Y (up the picture) -> Z, thickness Z -> -Y (relief faces you)
-    mesh = K.transform(mesh, (x, y, z, out) => { out[0] = x; out[1] = -z; out[2] = y; });
+    // stand the panel up: panel Y (up the picture) -> Z, thickness Z -> -Y (relief faces you).
+    // The foot is its own part (the bottom rows, full width, footDepth deep) so it can have its own
+    // colour: the panel stays one light colour for the picture, and the foot lies wholly below it,
+    // so a second colour costs exactly one filament change, at the foot's top.
+    const up = (x, y, z, out) => { out[0] = x; out[1] = -z; out[2] = y; };
+    const hp = bottom + 1;                                 // the panel's rows, down to the foot's top row
+    const PT = T.slice(0, hp * cw);
+    for (let x = 0; x < cw; x++) PT[(hp - 1) * cw + x] = T[(hp - 2) * cw + x];   // that row: the panel's own thickness
+    footTopMm = (foot - 1) * px;
+    const panel = K.transform(K.heightfieldMesh(PT, cw, hp, px, v => v), (x, y, z, out) => up(x, y + footTopMm, z, out));
+    const footMesh = K.transform(K.box(0, 0, 0, (cw - 1) * px, footTopMm, footDepth), up);
+    parts = [{ name: 'Lithophane', mesh: panel, color: o.color || COLORS.white }, { name: 'Foot', mesh: footMesh, color: o.standColor || o.color || COLORS.white }];
     notes.push(`Printed standing: best detail (the thickness steps are drawn by the nozzle sideways). A ${footDepth} mm deep foot along the bottom ${o.footMm ?? 6} mm keeps it upright (${r1(H / footDepth)}:1 tall to deep); the 3MF adds a 5 mm brim.`);
-  } else notes.push('Printed flat, relief up: simplest, but the thickness steps are layers (0.2 mm), so tones are coarser than standing.');
+  } else {
+    parts = [{ name: 'Lithophane', mesh: K.heightfieldMesh(T, cw, ch, px, v => v), color: o.color || COLORS.white }];
+    notes.push('Printed flat, relief up: simplest, but the thickness steps are layers (0.2 mm), so tones are coarser than standing.');
+  }
   notes.push(`Thickness ${tMin}-${tMax} mm from the drawing\'s darkness in ${px} mm cells, ${frame} mm frame ${tMax + 0.8} mm thick. Print in white (or natural) at 100% infill so the light is even.`);
   if (kind === 'spiral' || kind === 'real' || kind === 'wander') {
     const k = F.k; const ws = widthStats(g, k);
     if (ws.med < 0.6) notes.push(`The line is ${r2(ws.med)} mm wide at this size: finer than the nozzle, so it reads as tone (like the photo), not as separate lines.`);
   }
   if (fineFrac > 0.05) notes.push(`${Math.round(fineFrac * 100)}% of the line was a hairline, drawn at 0.3 mm so it still shows.`);
-  return finish('litho', [{ name: 'Lithophane', mesh, color: o.color || COLORS.white }], notes,
-    { walls: 2, infill: '100%', orientation: stand ? 'standing' : 'flat', note: 'Wall loops high enough that the panel is solid; 0.12-0.16 mm layers give finer tones standing up.' },
+  return finish('litho', parts, notes,
+    { walls: 2, infill: '100%', orientation: stand ? 'standing' : 'flat', note: 'Wall loops high enough that the panel is solid; 0.12-0.16 mm layers give finer tones standing up.',
+      ...(stand ? { colorChangeAtMm: r2(footTopMm) } : {}) },
     { cells: [cw, ch] }, { backlit: backlit(T, cw, ch, stand ? ch - foot : ch) });
 }
 
