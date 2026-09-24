@@ -416,9 +416,9 @@ export function createPrint3DDialog(ctx) {
     for (const r of roles) {
       // a stand follows the main colour until the user picks one ("Same as the panel")
       const own = c[r.id], follow = !!r.follows && !own;
-      const cur = String(own || c[r.follows] || '#FFFFFF').toUpperCase();
+      const cur = String(own || c[r.follows] || '#FFFFFF').toUpperCase(), followed = String(c[r.follows] || '#FFFFFF').toUpperCase();
       const inList = sw.some(s => s.hex.toUpperCase() === cur);
-      const same = r.follows ? `<button type="button" class="swatch match" role="radio" style="--c:${cur}" data-hex="" aria-label="Same as the ${esc(r.followName)}" title="Same as the ${esc(r.followName)}" aria-checked="${follow}"></button>` : '';
+      const same = r.follows ? `<button type="button" class="swatch match" role="radio" style="--c:${followed}" data-hex="" aria-label="Same as the ${esc(r.followName)}" title="Same as the ${esc(r.followName)}" aria-checked="${follow}"></button>` : '';
       html += `<div class="p3-color"><div class="field-label" id="p3r-${r.id}">${esc(r.label)} <span class="p3-cname">${esc(follow ? `Same as the ${r.followName}` : swatchName(cur))}</span></div>
         <div class="swatches" role="radiogroup" aria-labelledby="p3r-${r.id}" data-role="${r.id}">` + same +
         sw.map(s => `<button type="button" class="swatch" role="radio" style="--c:${s.hex}" data-hex="${s.hex}" aria-label="${esc(s.name)}" title="${esc(s.name)}" aria-checked="${!follow && s.hex.toUpperCase() === cur}"></button>`).join('') +
@@ -435,7 +435,7 @@ export function createPrint3DDialog(ctx) {
     colors()[role] = hex ? hex.toUpperCase() : null;   // null: a stand follows the main colour again
     persist();
     if (rerender) renderColors(); else showColorWarnings();
-    if (st.result) { showView(); showReport(); }
+    if (st.result) { showView(); showFit(); showEstimate(); showReport(); }   // the plate plan follows the colours
   }
   $('p3Colors').addEventListener('click', e => {
     const b = e.target.closest('.swatch[data-hex]');
@@ -547,7 +547,7 @@ export function createPrint3DDialog(ctx) {
       const what = st.product === 'cutter' ? 'the stamp' : st.product === 'wire' ? 'the stand' : 'the feet';
       const col = st.product === 'cutter' ? c.stamp : P.roleColor(st.product, c, 'stand');
       why = !f?.layout ? `${what} ${st.product === 'plaque' ? 'do' : 'does'} not fit beside the main piece, so ${st.product === 'plaque' ? 'they print' : 'it prints'} on plate 2.`
-        : `${what} ${st.product === 'plaque' ? 'print' : 'prints'} on plate 2 in ${swatchName(col).toLowerCase()}, so each plate needs one filament change at most.`;
+        : `${what} ${st.product === 'plaque' ? 'print' : 'prints'} on plate 2 in ${swatchName(col).toLowerCase()}, so ${st.product === 'wire' ? 'neither plate needs a filament change' : 'each plate needs one filament change at most'}.`;
       why = why[0].toUpperCase() + why.slice(1);
     }
     return { plates: two.length ? 2 : 1, why };
