@@ -6,7 +6,7 @@
 //
 // Each style differs in what it keeps (pick), how the hand moves (line) and what it draws with.
 import { STRIDE } from '../spiral.js';
-import { buildLineArt, LAYOUT_R } from './path.js';
+import { buildLineArt, LAYOUT_R, silhouetteStrokes, standinSilhouette, silhouetteScore } from './path.js';
 import { strokeLength } from './strokes.js';
 
 /** The four approved styles. defaults are what the UI starts each style with. */
@@ -48,7 +48,7 @@ function pickPicasso(strokes, face) {
   if (!face) {
     // the extractor's own order, but only lines long enough to say something; an animal's eyes,
     // nose and mouth (found by the extractor) always stay: they are what makes it read
-    const out = strokes.filter(s => s.kind === 'eye' || s.kind === 'iris' || s.kind === 'nose' || s.kind === 'lips');
+    const out = strokes.filter(s => s.silhouette || s.kind === 'eye' || s.kind === 'iris' || s.kind === 'nose' || s.kind === 'lips');
     let n = 0;
     for (const s of strokes) { if (n >= 8) break; if (out.includes(s)) continue; if (strokeLength(s) > 0.06 || s.kind === 'hair') { out.push(s); n++; } }
     return out.length >= 3 ? out : strokes.slice(0, 8);
@@ -62,6 +62,8 @@ function pickPicasso(strokes, face) {
     || (a.kind === 'hair' ? b.saliency - a.saliency : 0) || (strokeLength(b) - strokeLength(a)));
   const out = [], count = {};
   for (const s of ranked) {
+    // (the silhouette's contour always stays)
+    if (s.silhouette) { out.push(s); continue; }
     if (!FACE_KINDS_A.has(s.kind)) continue;
     count[s.kind] = (count[s.kind] || 0) + 1;
     if (count[s.kind] <= (cap[s.kind] ?? 1)) out.push(s);
@@ -104,7 +106,8 @@ function noise1(x, seed) {
  *  whole drawing sits on a gentle warp, and each feature comes out a little too big, tilted
  *  and shifted, the way features drawn without looking never quite line up. */
 function misfit(strokes, face, seed) {
-  const A = 0.028, K = 2 * Math.PI * 1.1;
+  // (half the warp when the drawing rides a silhouette: the outer shape is what must read)
+  const A = strokes.some(s => s.silhouette) ? 0.014 : 0.028, K = 2 * Math.PI * 1.1;
   const ph = [1, 2, 3, 4].map(k => (noise1(k * 1.7, seed) + 1) * Math.PI);
   const warp = (x, y) => [
     x + A * Math.sin(K * y + ph[0]) + 0.5 * A * Math.sin(1.7 * K * x + ph[1]),
@@ -116,7 +119,8 @@ function misfit(strokes, face, seed) {
     let cx = 0, cy = 0;
     for (let k = 0; k < p.length; k += 2) { cx += p[k]; cy += p[k + 1]; }
     cx /= n; cy /= n;
-    const f = face && small.has(s.kind) ? 1 : 0.35;
+    // (the silhouette's contour drifts with the warp but keeps its size: the shape must still read)
+    const f = s.silhouette ? 0.1 : face && small.has(s.kind) ? 1 : 0.35;
     const sc = 1 + f * (0.12 + 0.12 * noise1(si * 3.1 + 0.5, seed + 7));
     const rot = f * 0.12 * noise1(si * 2.3 + 0.2, seed + 8);
     const sh = [f * 0.012 * noise1(si * 1.9 + 0.7, seed + 9), f * 0.012 * noise1(si * 2.9 + 0.1, seed + 10)];
@@ -161,7 +165,15 @@ export function buildStyled(styleId, lineResult, opts = {}) {
   const seed = (opts.seed ?? 3) | 0;
   const features = (lineResult && lineResult.features) || {};
   const face = features.face || null;
-  const strokes = (lineResult && lineResult.strokes) || [];
+  const strokes0 = (lineResult && lineResult.strokes) || [];
+  // silhouette first: the subject's outer shape is the drawing's main line and the model's lines
+  // are clipped to inside it (features.silhouette from js/lineart/silhouette.js; opts.silhouette:
+  // 'standin' builds a stand-in from the lines themselves, false or 'off' draws the lines alone)
+  const silOpt = opts.silhouette ?? true;
+  let sil = silOpt === false || silOpt === 'off' ? null : features.silhouette || null;
+  if (!sil && silOpt === 'standin' && strokes0.length) sil = standinSilhouette(strokes0, { face });
+  const silOk = sil && ((sil.outlines && sil.outlines.length) || (sil.mask && sil.mask.data) || (sil.skyline && sil.skyline.length >= 8));
+  const strokes = silOk ? silhouetteStrokes(strokes0, sil, S.id, face, features.dark) : strokes0;
   const picked = PICKS[S.id](strokes, face, seed);
   const sheetMm = opts.sheetMm || 210;
   const line = {
@@ -173,9 +185,19 @@ export function buildStyled(styleId, lineResult, opts = {}) {
     pressure: opts.pressure ?? null,
     styleId: S.id,
   };
-  const geom = buildLineArt(picked, features, line);
+  const geom = buildLineArt(picked, silOk && sil !== features.silhouette ? { ...features, silhouette: sil } : features, line);
   blindDrift(geom, (opts.drift ?? D.drift) * (0.4 + 0.6 * (line.wobble ?? 1)), sheetMm, seed * 31 + 1);
   const la = geom.lineart;
+  if (silOk) {
+    la.silhouette = { kind: sil.kind || 'unknown', confidence: sil.confidence ?? null, standin: !!sil.standin };
+    // how well the drawing gives the subject's outer shape (the line-up reports it)
+    try { la.silScore = silhouetteScore(geom, sil); } catch { la.silScore = null; }
+  }
+  else if (features.silhouette && features.silhouette.mask) {
+    // (drawn without it, but scored against it: the before of a before/after)
+    try { la.silScore = silhouetteScore(geom, features.silhouette); } catch { la.silScore = null; }
+  }
+  if (la.lengthM) la.retraceShare = +(la.retracedM / la.lengthM).toFixed(3);
   la.lineStyle = la.style;
   la.style = S.id;
   la.letter = S.letter;

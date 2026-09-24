@@ -1051,6 +1051,19 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       self.postMessage({ id, ok: true, out: await probeBackend(e.data.backend) });
       return;
     }
+    if (e.data.sil) {
+      // silhouette (js/lineart/silhouette.js): lines.js runs it in a second instance of this worker,
+      // so it overlaps the line model instead of queueing behind it
+      try {
+        const { silhouette } = await import('./silhouette.js');
+        const { rgba, N, opts } = e.data.sil;
+        const c = new OffscreenCanvas(N, N);
+        c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.length), N, N), 0, 0);
+        const out = await silhouette(c, opts || {});
+        self.postMessage({ id, ok: true, out });
+      } catch (err) { self.postMessage({ id, ok: false, error: String(err && err.stack || err) }); }
+      return;
+    }
     if (e.data.warm) {
       try { self.postMessage({ id, ok: true, out: await warmModel(e.data.backend) }); }
       catch (err) { self.postMessage({ id, ok: false, error: String(err && err.message || err) }); }

@@ -589,7 +589,7 @@ export function buildLineArt(strokes, features = {}, opts = {}) {
     let cx = 0, cy = 0;
     for (let k = 0; k < pts.length; k += 2) { cx += pts[k]; cy += pts[k + 1]; }
     const kind = KINDS[s.kind] ? s.kind : 'other';
-    list.push({ src: i, kind, closed, sal: clamp01(s.saliency ?? 0.5), dark: clamp01(s.dark ?? 0.5), pts, len,
+    list.push({ src: i, kind, closed, sal: clamp01(s.saliency ?? 0.5), dark: clamp01(s.dark ?? 0.5), pts, len, sil: !!s.silhouette,
       cx: cx / (pts.length / 2), cy: cy / (pts.length / 2) });
   });
 
@@ -603,7 +603,8 @@ export function buildLineArt(strokes, features = {}, opts = {}) {
   let chosen = [];
   let acc = 0;
   for (const s of list) {
-    if (acc + s.len > budget && !(s.sal >= 0.9 && acc + s.len < budget * 1.3)) continue;
+    // (the silhouette's contour always stays: it is what the drawing is read by)
+    if (!s.sil && acc + s.len > budget && !(s.sal >= 0.9 && acc + s.len < budget * 1.3)) continue;
     chosen.push(s); acc += s.len;
   }
   // an open line that another line runs into is split there, so the pen can join it at the
@@ -681,7 +682,10 @@ export function buildLineArt(strokes, features = {}, opts = {}) {
   const noHatch = (x, y) => (lmk && (y < browY || (y < mouthY && !inPoly(ovalPoly, x, y))))
     || eyeBoxes.some(([cx, cy, rx, ry]) => ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 < 1)
     || loopBoxes.some(([x0, x1, y0, y1]) => x > x0 && x < x1 && y > y0 && y < y1);
-  const inSubject0 = face && face.box ? (x, y) => {
+  // with a silhouette, shade only inside the subject's own shape
+  const silM = features && features.silhouette && features.silhouette.mask && features.silhouette.mask.data && !features.silhouette.standin
+    ? maskTools(features.silhouette.mask) : null;
+  const inSubject0 = silM ? (x, y) => silM.inside((x + 1) / 2, (y + 1) / 2) && silM.depth((x + 1) / 2, (y + 1) / 2) > 0.01 : face && face.box ? (x, y) => {
     const u = (x - faceC[0]) / (unit * 1.25), v = (y - faceC[1]) / (unit * (y < faceC[1] ? 1.5 : 1.9));
     return u * u + v * v < 1;
   } : rims.length ? (x, y) => rims.some(s => inPoly(s.pts, x, y)) : () => true;
@@ -860,6 +864,12 @@ export function buildLineArt(strokes, features = {}, opts = {}) {
       - 0.35 * (s.cy - faceC[1]) / unit;
     if (v > fb) { fb = v; first = i; }
   });
+  // silhouette first: without a face, the line starts on the subject's outer shape (the longest
+  // piece of it), at its top, the way a one-line artist opens with the whole form
+  if (!faceStart) {
+    let top = Infinity;
+    chosen.forEach((s, i) => { if (s.sil) for (let k = 1; k < s.pts.length; k += 2) if (s.pts[k] < top) { top = s.pts[k]; first = i; } });
+  }
   planTour(chosen, first, face ? KINDS : null);
   {
     const s = chosen.splice(first, 1)[0];
@@ -878,7 +888,10 @@ export function buildLineArt(strokes, features = {}, opts = {}) {
   }
 
   const Rb = 0.35 * unit + mm(3);                   // how far a new bridge may reach from the network
-  const cR = 0.4, cB = 3.2, pB = 0.025 * unit;      // retrace is cheap (it hides), new line is dear
+  // (riding a silhouette the contour is already in pieces between the dips, so going back over
+  // lines costs more: a short new dip reads better than a long doubled line)
+  const silMode = chosen.some(s => s.sil);
+  const cR = silMode ? 0.75 : 0.4, cB = 3.2, pB = 0.025 * unit;      // retrace is cheap (it hides), new line is dear
   const bLong = 0.06 * unit;                        // bridges past this grow dear fast (no long connectors)
   const bridgeCost = b => b * cB + (b > tolJ ? pB : 0) + (b > bLong ? 40 * (b - bLong) * (b - bLong) / unit : 0);
   // going back over a long way (a whole horizon band) doubles it into a pill: past 45 mm a short
@@ -1227,4 +1240,876 @@ export function buildLineArt(strokes, features = {}, opts = {}) {
     ms: { select: Math.round(tSelect - t0), order: Math.round(tOrder - tSelect), hand: Math.round(performance.now() - tOrder) },
   };
   return geom;
+}
+
+// ------------------------------------------------------------------ silhouette first
+// A one-line artist starts from the outer shape, then dips in for a few telling features. The
+// silhouette (js/lineart/silhouette.js, features.silhouette: { mask {w,h,data 0/255}, outlines
+// [closed Float32Array polylines, frame fractions, largest first], kind, confidence, parts?,
+// skyline? }) gives that shape; silhouetteStrokes() turns it into the artist's contour plus the
+// model's lines clipped to inside it, and buildLineArt() routes the one line along it.
+
+/** Chamfer distance (cells) from every cell to the nearest cell where seed(k) is true. */
+function chamfer(w, h, seed) {
+  const INF = 1e9, d = new Float32Array(w * h), R2 = Math.SQRT2;
+  for (let k = 0; k < w * h; k++) d[k] = seed(k) ? 0 : INF;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const k = j * w + i;
+    let v = d[k];
+    if (i > 0 && d[k - 1] + 1 < v) v = d[k - 1] + 1;
+    if (j > 0) {
+      if (d[k - w] + 1 < v) v = d[k - w] + 1;
+      if (i > 0 && d[k - w - 1] + R2 < v) v = d[k - w - 1] + R2;
+      if (i < w - 1 && d[k - w + 1] + R2 < v) v = d[k - w + 1] + R2;
+    }
+    d[k] = v;
+  }
+  for (let j = h - 1; j >= 0; j--) for (let i = w - 1; i >= 0; i--) {
+    const k = j * w + i;
+    let v = d[k];
+    if (i < w - 1 && d[k + 1] + 1 < v) v = d[k + 1] + 1;
+    if (j < h - 1) {
+      if (d[k + w] + 1 < v) v = d[k + w] + 1;
+      if (i < w - 1 && d[k + w + 1] + R2 < v) v = d[k + w + 1] + R2;
+      if (i > 0 && d[k + w - 1] + R2 < v) v = d[k + w - 1] + R2;
+    }
+    d[k] = v;
+  }
+  return d;
+}
+
+/** Sampling helpers on a 0/255 mask, all in frame fractions. */
+export function maskTools(mask) {
+  const { w, h, data } = mask;
+  const on = k => data[k] > 127;
+  const toMask = chamfer(w, h, on), toBg = chamfer(w, h, k => !on(k));
+  const cell = (x, y) => {
+    const i = Math.max(0, Math.min(w - 1, Math.floor(x * w))), j = Math.max(0, Math.min(h - 1, Math.floor(y * h)));
+    return j * w + i;
+  };
+  return {
+    w, h,
+    inside: (x, y) => on(cell(x, y)),
+    /** 0 inside the mask, else the distance to it */
+    out: (x, y) => toMask[cell(x, y)] / w,
+    /** distance to the mask's boundary, either side */
+    edge: (x, y) => { const k = cell(x, y); return (on(k) ? toBg[k] : toMask[k]) / w; },
+    /** how deep inside (0 outside) */
+    depth: (x, y) => { const k = cell(x, y); return on(k) ? toBg[k] / w : 0; },
+  };
+}
+
+/** Outer boundaries of a 0/255 mask as closed polylines (pixel corners, frame fractions), by
+ *  following the cracks between on and off cells; largest area first. */
+export function traceMask(mask, minArea = 0.002) {
+  const { w, h, data } = mask;
+  const on = (i, j) => i >= 0 && j >= 0 && i < w && j < h && data[j * w + i] > 127;
+  const W1 = w + 1, next = new Map();
+  const add = (x0, y0, x1, y1) => {
+    const a = y0 * W1 + x0, b = y1 * W1 + x1;
+    const l = next.get(a);
+    if (l) l.push(b); else next.set(a, [b]);
+  };
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    if (!on(i, j)) continue;
+    if (!on(i, j - 1)) add(i, j, i + 1, j);
+    if (!on(i + 1, j)) add(i + 1, j, i + 1, j + 1);
+    if (!on(i, j + 1)) add(i + 1, j + 1, i, j + 1);
+    if (!on(i - 1, j)) add(i, j + 1, i, j);
+  }
+  const loops = [];
+  for (const [start] of next) {
+    let l = next.get(start);
+    while (l && l.length) {
+      const pts = [];
+      let v = start;
+      for (let guard = 0; guard < 4 * w * h; guard++) {
+        pts.push((v % W1) / w, Math.floor(v / W1) / h);
+        const ls = next.get(v);
+        if (!ls || !ls.length) break;
+        const nv = ls.pop();
+        v = nv;
+        if (v === start) break;
+      }
+      let A = 0;
+      for (let i = 0, j = pts.length - 2; i < pts.length; j = i, i += 2) A += pts[j] * pts[i + 1] - pts[i] * pts[j + 1];
+      A /= 2;
+      // outer boundaries run clockwise on screen (positive here); holes the other way
+      if (A > minArea && pts.length >= 8) loops.push({ pts: Float32Array.from(pts), area: A });
+      l = next.get(start);
+    }
+  }
+  return loops.sort((a, b) => b.area - a.area).map(l => l.pts);
+}
+
+/** Even arc spacing of an open or closed polyline (plain arrays). */
+function resampleFrac(p, closed, step) { return resample(Array.from(p), closed, step); }
+
+/** Gaussian-ish smoothing (three box passes) of a polyline; open lines keep their ends. */
+function smoothPoly(p, closed, r) {
+  const n = p.length / 2;
+  if (r < 1 || n < 5) return p.slice();
+  let a = Float64Array.from(p);
+  for (let pass = 0; pass < 3; pass++) {
+    const b = new Float64Array(a.length);
+    for (let i = 0; i < n; i++) {
+      let sx = 0, sy = 0, c = 0;
+      for (let k = -r; k <= r; k++) {
+        let q = i + k;
+        if (closed) q = ((q % n) + n) % n; else q = Math.max(0, Math.min(n - 1, q));
+        sx += a[2 * q]; sy += a[2 * q + 1]; c++;
+      }
+      b[2 * i] = sx / c; b[2 * i + 1] = sy / c;
+    }
+    if (!closed) { b[0] = a[0]; b[1] = a[1]; b[2 * n - 2] = a[2 * n - 2]; b[2 * n - 1] = a[2 * n - 1]; }
+    a = b;
+  }
+  return Array.from(a);
+}
+
+/** Smoothing that keeps the telling corners: the curve is smoothed hard, then pulled back toward a
+ *  lightly smoothed copy where that one turns sharply (an ear tip, a chin, a cup handle's corner). */
+function contourOf(p, closed, rHard, rSoft, keep) {
+  const hard = smoothPoly(p, closed, rHard), soft = smoothPoly(p, closed, rSoft);
+  const n = p.length / 2, W = Math.max(2, rSoft * 2), out = hard.slice();
+  if (keep <= 0) return out;
+  const turn = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = closed ? (i - W + n) % n : Math.max(0, i - W), b = closed ? (i + W) % n : Math.min(n - 1, i + W);
+    const ax = soft[2 * i] - soft[2 * a], ay = soft[2 * i + 1] - soft[2 * a + 1], bx = soft[2 * b] - soft[2 * i], by = soft[2 * b + 1] - soft[2 * i + 1];
+    const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+    if (la < 1e-9 || lb < 1e-9) continue;
+    turn[i] = Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by) / (la * lb))));
+  }
+  // spread the corner weight a little along the line, so the blend has no kink
+  for (let i = 0; i < n; i++) {
+    let m = 0;
+    for (let k = -W; k <= W; k++) {
+      const q = closed ? ((i + k) % n + n) % n : Math.max(0, Math.min(n - 1, i + k));
+      m = Math.max(m, turn[q] * (1 - Math.abs(k) / (W + 1)));
+    }
+    const t = keep * Math.min(1, Math.max(0, (m - 0.5) / 0.7));
+    out[2 * i] = hard[2 * i] * (1 - t) + soft[2 * i] * t;
+    out[2 * i + 1] = hard[2 * i + 1] * (1 - t) + soft[2 * i + 1] * t;
+  }
+  return out;
+}
+
+/** Split a closed outline where it runs along the frame border (the photo's edge is not the
+ *  subject's): open runs, each with at least minLen of line. */
+function offBorderRuns(p, b, minLen, open = false) {
+  const n = p.length / 2, off = k => p[2 * k] > b && p[2 * k] < 1 - b && p[2 * k + 1] > b && p[2 * k + 1] < 1 - b;
+  let s0 = -1;
+  for (let k = 0; k < n; k++) if (!off(k)) { s0 = k; break; }
+  if (s0 < 0) return [{ pts: Array.from(p), closed: !open }];
+  if (open) s0 = -1;
+  const runs = [];
+  let run = [];
+  for (let m = 1; m <= (open ? n : n); m++) {
+    const k = open ? m - 1 : (s0 + m) % n;
+    if (off(k)) run.push(p[2 * k], p[2 * k + 1]);
+    else { if (run.length >= 8 && polyLen(run, false) >= minLen) runs.push({ pts: run, closed: false }); run = []; }
+  }
+  if (run.length >= 8 && polyLen(run, false) >= minLen) runs.push({ pts: run, closed: false });
+  return runs;
+}
+
+// per style: contour smoothing (frame fractions: hard, soft), corner keeping, and how many inner
+// lines of each sort survive
+const SIL_STYLE = {
+  picasso: { hard: 0.014, soft: 0.004, keep: 0.8, other: 2, hair: 2, contour: 2, ear: 1, land: 1 },
+  matisse: { hard: 0.009, soft: 0.003, keep: 0.9, other: 5, hair: 4, contour: 3, ear: 2, land: 2 },
+  blind: { hard: 0.006, soft: 0.003, keep: 0.6, other: 8, hair: 6, contour: 4, ear: 2, land: 3 },
+  brush: { hard: 0.010, soft: 0.004, keep: 0.8, other: 6, hair: 5, contour: 3, ear: 2, land: 3 },
+};
+const FEATURE_KINDS = new Set(['eye', 'iris', 'brow', 'nose', 'lips']);
+
+function stroke(points, kind, sal, closed, dark = 0.6, extra = {}) {
+  return { points: Float32Array.from(points), closed, saliency: sal, kind, dark, ...extra };
+}
+
+/**
+ * Silhouette-first strokes: the subject's outline as the artist's contour (kind 'outline',
+ * silhouette: true, saliency 1), then the line model's strokes clipped to inside it, keeping
+ * only the telling ones. Frame fractions in and out (the LA-lines contract).
+ */
+export function silhouetteStrokes(strokes, sil, styleId = 'matisse', face = null, dark = null) {
+  sil = closeUpSilhouette(sil, face);
+  const P = SIL_STYLE[styleId] || SIL_STYLE.matisse;
+  const out = [];
+  const step = 0.0025;
+  // a scene: a landscape, or a small subject (a setting sun) standing on a skyline; the skyline is
+  // the main line and the small subject one landmark on it
+  const land = isScene(sil);
+  // a thin subject the mask cannot hold (low confidence: a bicycle's blob): the line model's structure
+  if (!land && sil.kind === 'object' && (sil.confidence ?? 1) < 0.55 && sil.mask && sil.mask.data) {
+    const st = structureStrokes(strokes, sil, P);
+    if (st) return st;
+  }
+  // ---- the contour
+  const contourLines = [];
+  let treeLines = [];
+  if (land) {
+    // (not where it runs down the photo's side: the frame's edge is not the horizon)
+    const p = resampleFrac(sil.skyline, false, step);
+    const runs = offBorderRuns(Float32Array.from(p), 0.035, 0.08, true).map(r => r.pts);
+    const long = runs.sort((a, b) => polyLen(b, false) - polyLen(a, false)).slice(0, 2);
+    for (const q of long) contourLines.push({ pts: contourOf(q, false, Math.round(P.hard * 0.7 / step), Math.round(P.soft / step), P.keep), closed: false });
+    // the small subject on it (the sun, a lone tree), whole
+    if (sil.kind !== 'landscape') for (const q of (sil.outlines || []).slice(0, 1)) {
+      const r = resampleFrac(q, true, step);
+      if (r.length >= 16) for (const run of offBorderRuns(Float32Array.from(r), 0.012, 0.04)) contourLines.push({ pts: contourOf(run.pts, run.closed, Math.round(P.soft * 2 / step), Math.round(P.soft / step), P.keep), closed: run.closed });
+    }
+    // the next line down: the tree line as a few trees (a landscape with a forest), else the
+    // model's longest calm line under the skyline (a nearer ridge, a shoreline)
+    if (sil.kind === 'landscape') {
+      const skyR = resampleFrac(sil.skyline, false, 0.01);
+      const tg = treeGlyphs(sil.treeline, Math.max(2, Math.min(4, P.land + 1)), skyR);
+      if (tg) {
+        for (const b of tg.base) contourLines.push({ pts: contourOf(resampleFrac(b, false, step), false, Math.round(0.04 / step), Math.round(P.soft / step), 0), closed: false });
+        treeLines = tg.trees.map(t => resampleFrac(t.pts, false, step));
+      } else {
+        const r = secondLine(strokes, skyR);
+        if (r) contourLines.push({ pts: contourOf(resampleFrac(r, false, step), false, Math.round(P.hard * 1.5 / step), Math.round(P.soft / step), P.keep), closed: false });
+      }
+    }
+  } else {
+    // (the silhouette's own outlines, frame fractions; traced from its mask when it has none)
+    let outlines = (sil.outlines || []).filter(q => q && q.length >= 8 && q.every(v => v >= -0.01 && v <= 1.01));
+    if (!outlines.length && sil.mask && sil.mask.data) outlines = traceMask(sil.mask);
+    const areaOf = q => { let A = 0; for (let i = 0, j = q.length - 2; i < q.length; j = i, i += 2) A += q[j] * q[i + 1] - q[i] * q[j + 1]; return Math.abs(A / 2); };
+    const a0 = outlines.length ? areaOf(outlines[0]) : 0;
+    // the subject, and a second part only when it is a real part of the picture (a second pet)
+    const use = outlines.filter((q, i) => i === 0 || (i < 3 && areaOf(q) > 0.25 * a0));
+    if (sil.oval) {
+      // a face that fills the frame: its oval from the landmarks, cut by the frame (a close crop)
+      const p = resampleFrac(sil.oval, true, step);
+      for (const run of offBorderRuns(Float32Array.from(p), 0.012, 0.05)) contourLines.push({ pts: contourOf(run.pts, run.closed, Math.round(0.02 / step), Math.round(P.soft / step), 0), closed: run.closed });
+    } else for (const q of use) {
+      const p = resampleFrac(q, true, step);
+      if (p.length < 16) continue;
+      for (const run of offBorderRuns(p, 0.012, 0.05)) {
+        contourLines.push({ pts: contourOf(run.pts, run.closed, Math.round(P.hard / step), Math.round(P.soft / step), P.keep), closed: run.closed });
+      }
+    }
+  }
+  for (const c of contourLines) out.push(stroke(c.pts, 'outline', 1, c.closed, 0.7, { silhouette: true }));
+  if (!land && (!sil.mask || !sil.mask.data)) return out.concat(strokes);
+
+  // ---- inner lines, clipped to the silhouette (plus a small margin)
+  const M = sil.mask && sil.mask.data ? maskTools(sil.mask) : null;
+  const hair = sil.parts && sil.parts.hair && sil.parts.hair.data ? maskTools(sil.parts.hair) : null;
+  const margin = 0.012, dup = land ? 0.03 : 0.016;
+  // (a landscape's lines are judged by their distance to the skyline, not by the ground mask)
+  const sky = land ? resampleFrac(sil.skyline, false, 0.01) : null;
+  const nearSky = (x, y) => { for (let k = 0; k < sky.length; k += 2) if (Math.hypot(sky[k] - x, sky[k + 1] - y) < dup) return true; return false; };
+  // how far a landmark's top sits below the skyline over it (a landmark stands on the horizon)
+  const belowSky = p => {
+    let top = Infinity, tx = 0;
+    for (let k = 0; k < p.length; k += 2) if (p[k + 1] < top) { top = p[k + 1]; tx = p[k]; }
+    let best = Infinity, sy = top;
+    for (let k = 0; k < sky.length; k += 2) { const d = Math.abs(sky[k] - tx); if (d < best) { best = d; sy = sky[k + 1]; } }
+    return top - sy;
+  };
+  const cands = [], apps = [];
+  for (const s of strokes || []) {
+    const p = s.points;
+    if (!p || p.length < 4) continue;
+    const n = p.length / 2;
+    let cx = 0, cy = 0;
+    for (let k = 0; k < p.length; k += 2) { cx += p[k]; cy += p[k + 1]; }
+    cx /= n; cy /= n;
+    if (FEATURE_KINDS.has(s.kind) || (s.closed && strokeBox(p) < 0.08)) {
+      // eyes, nose, mouth (and small closed shapes: a pupil, a button): whole, when on the subject
+      if (land ? strokeBox(p) < 0.12 : M.out(cx, cy) <= margin) cands.push({ s, pts: Array.from(p), closed: !!s.closed, feat: FEATURE_KINDS.has(s.kind), cx, cy });
+      continue;
+    }
+    // the rest: only the runs inside, and not the model's own copy of the outline
+    let run = [];
+    const flush = () => {
+      if (run.length >= 8 && polyLen(run, false) >= 0.035) {
+        let rx = 0, ry = 0;
+        for (let k = 0; k < run.length; k += 2) { rx += run[k]; ry += run[k + 1]; }
+        cands.push({ s, pts: run, closed: false, feat: false, cx: rx / (run.length / 2), cy: ry / (run.length / 2) });
+      }
+      run = [];
+    };
+    for (let k = 0; k < n; k++) {
+      const x = p[2 * k], y = p[2 * k + 1];
+      const keep = land ? !nearSky(x, y) : (M.out(x, y) <= margin && M.edge(x, y) > dup);
+      if (keep) run.push(x, y); else flush();
+    }
+    flush();
+    // a closed stroke that survived whole stays closed
+    const last = cands[cands.length - 1];
+    if (last && last.s === s && s.closed && last.pts.length === p.length) last.closed = true;
+    // a loop that leaves the silhouette and comes back to it close by (a cup's handle, an ear or a
+    // beak the mask missed) belongs to the outer shape: it joins the contour
+    if (!land) {
+      let a = -1;
+      for (let k = 0; k <= n; k++) {
+        const outside = k < n && M.out(p[2 * k], p[2 * k + 1]) > margin;
+        if (outside && a < 0) a = k;
+        else if (!outside && a >= 0) {
+          if (a > 0 && k < n) {
+            const q = Array.from(p.slice(2 * (a - 1), 2 * k + 2));
+            let far = 0;
+            for (let m = 0; m < q.length; m += 2) far = Math.max(far, M.out(q[m], q[m + 1]));
+            const len = polyLen(q, false), chord = Math.hypot(q[0] - q[q.length - 2], q[1] - q[q.length - 1]);
+            if (far > 0.02 && far < 0.09 && len > 0.05 && chord < 0.45 * len) apps.push({ pts: q, len });
+          }
+          a = -1;
+        }
+      }
+    }
+  }
+  // ---- keep the telling ones
+  // (a landscape has no features to keep whole: every landmark competes for the few places)
+  const feats = land ? [] : cands.filter(c => c.feat);
+  // long hair falling to the shoulders makes one hood around the face: the lines at the neck
+  // (its sides, a neckline, the shoulder meeting the hair) are kept as features, so head and
+  // shoulders read apart
+  const hood = !land && (sil.kind === 'portrait' || sil.kind === 'person') && !sil.closeUp && face ? hoodInfo(M, face) : null;
+  const neckKeep = [];
+  if (hood) {
+    const neck = cands.filter(c => !c.feat && c.cy > hood.chin - 0.01 && c.cy < hood.chin + 0.9 * hood.fh && Math.abs(c.cx - hood.cx) < 1.2 * hood.fw && M.depth(c.cx, c.cy) > 0.012)
+      .map(c => ({ c, len: polyLen(c.pts, c.closed) })).filter(o => o.len > 0.05).sort((u, v) => v.len - u.len).slice(0, 3);
+    for (const o of neck.slice(0, 2)) { o.c.keep = true; neckKeep.push(o.c); }   // (kept, but no stronger dip into the contour than any inner line)
+  }
+  // a pale animal's eyes and nose, when the model found none there
+  if (!land && sil.kind === 'animal' && dark) feats.push(...animalSpots(M, sil, dark, cands.filter(c => c.feat || (c.closed && strokeBox(c.pts) < 0.08))));
+  const rest = cands.filter(c => land || (!c.feat && !c.keep && !feats.includes(c))).map(c => {
+    const len = polyLen(c.pts, c.closed);
+    const depth = land ? 0 : M.depth(c.cx, c.cy);
+    const kind = c.s.kind;
+    const group = kind === 'hair' ? 'hair' : (kind === 'outline' || kind === 'jaw') ? 'contour' : kind === 'ear' ? 'ear' : 'other';
+    // a landscape keeps compact landmarks (a sun, a tree, a house), never long bands
+    const box = strokeBox(c.pts);
+    const v = (c.s.saliency ?? 0.5) * Math.sqrt(len) * (1 + 4 * Math.min(0.08, depth)) * (land ? (box < 0.3 && box > 0.06 && len < 4 * box ? 1 : 0.1) : 1)
+      * (hair && group === 'hair' ? (hair.inside(c.cx, c.cy) ? 1.4 : 0.5) : 1);
+    return { ...c, len, group, v, box };
+  }).sort((a, b) => b.v - a.v);
+  const cap = land ? { hair: 0, contour: 0, ear: 0, other: P.land } : { hair: P.hair, contour: P.contour, ear: P.ear, other: P.other };
+  if (face) cap.other = Math.max(1, Math.round(cap.other * 0.6));
+  if (sil.tallest) cap.other = Math.min(cap.other, 2);   // (a building: a window or two, not every brick)
+  const used = { hair: 0, contour: 0, ear: 0, other: 0 };
+  const keepRest = [];
+  for (const c of rest) {
+    if (land && !(c.box < 0.3 && c.box > 0.06 && c.len < 4 * c.box && standsUp(c.pts, c.closed) && belowSky(c.pts) < 0.25)) continue;   // (no bands, no U's, nothing lost in the foreground)
+    if (used[c.group] >= cap[c.group]) continue;
+    used[c.group]++;
+    keepRest.push(c);
+  }
+  const inner = [...feats, ...neckKeep, ...keepRest];
+  // ---- the contour in pieces, cut where the line dips in for a feature: the pen leaves the
+  // outline there, draws the feature and comes back out to go on along the outline (never back
+  // over the outline it already drew)
+  const pieces = [];
+  for (const c of contourLines) {
+    const p = c.pts, n = p.length / 2, minPts = Math.max(Math.round(0.07 / step), Math.round(n / 9));
+    const ks = [];
+    for (const f of inner) {
+      let bk = -1, bd = land ? 0.35 : 0.3;
+      for (let k = 0; k < n; k += 2) { const d = Math.hypot(p[2 * k] - f.cx, p[2 * k + 1] - f.cy); if (d < bd) { bd = d; bk = k; } }
+      if (bk >= 0) ks.push({ k: bk, pri: (f.feat ? 2 : 1) - bd });
+    }
+    // the strongest dips first, each at least minPts from the others (and the open ends)
+    ks.sort((a, b) => b.pri - a.pri);
+    const cuts = [];
+    const gap = (a, b) => { const d = Math.abs(a - b); return c.closed ? Math.min(d, n - d) : d; };
+    for (const { k } of ks) {
+      if (!c.closed && (k < minPts || k > n - 1 - minPts)) continue;
+      if (cuts.every(q => gap(q, k) >= minPts)) cuts.push(k);
+      if (cuts.length >= 9) break;
+    }
+    cuts.sort((a, b) => a - b);
+    if (!cuts.length || (c.closed && cuts.length < 2)) { pieces.push(c); continue; }
+    if (c.closed) {
+      for (let i = 0; i < cuts.length; i++) {
+        const a = cuts[i], b = cuts[(i + 1) % cuts.length], q = [];
+        for (let k = a; ; k = (k + 1) % n) { q.push(p[2 * k], p[2 * k + 1]); if (k === b) break; }
+        pieces.push({ pts: q, closed: false });
+      }
+    } else {
+      let a = 0;
+      for (const b of [...cuts, n - 1]) { pieces.push({ pts: p.slice(2 * a, 2 * b + 2), closed: false }); a = b; }
+    }
+  }
+  out.length = 0;
+  for (const c of pieces) out.push(stroke(c.pts, 'outline', 1, c.closed, 0.7, { silhouette: true }));
+  // (the longest few appendages, not overlapping one another)
+  const kept = [];
+  for (const a of apps.sort((u, v) => v.len - u.len)) {
+    if (kept.length >= (sil.tallest ? 0 : 3)) break;
+    const cx = a.pts[a.pts.length >> 2 << 1], cy = a.pts[(a.pts.length >> 2 << 1) + 1];
+    if (kept.some(b => { for (let m = 0; m < b.pts.length; m += 2) if (Math.hypot(b.pts[m] - cx, b.pts[m + 1] - cy) < 0.03) return true; return false; })) continue;
+    kept.push(a);
+    out.push(stroke(a.pts, 'outline', 1, false, 0.7, { silhouette: true, appendage: true }));
+  }
+  for (const t of treeLines) out.push(stroke(t, 'outline', 1, false, 0.7, { silhouette: true, tree: true }));
+  for (const c of inner) out.push(stroke(c.pts, c.s.kind, c.s.saliency ?? 0.5, c.closed, c.s.dark ?? 0.5));
+  return out;
+}
+
+function strokeBox(p) {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let k = 0; k < p.length; k += 2) { x0 = Math.min(x0, p[k]); x1 = Math.max(x1, p[k]); y0 = Math.min(y0, p[k + 1]); y1 = Math.max(y1, p[k + 1]); }
+  return Math.max(x1 - x0, y1 - y0);
+}
+
+/**
+ * STAND-IN silhouette until js/lineart/silhouette.js lands: the line model's strokes rasterised,
+ * thickened, flood-filled from the frame's top and sides and inverted, the largest part, thinned
+ * back. Same shape as silhouette()'s result, with standin: true.
+ */
+export function standinSilhouette(strokes, { N = 160, face = null, ink = null, inkN = 0, inkThr = 0.4 } = {}) {
+  const w = N, h = N, line = new Uint8Array(w * h);
+  // the line model's whole map when there is one (ink 0..1, inkN x inkN), else the chosen strokes
+  if (ink && inkN) for (let j = 0; j < inkN; j++) for (let i = 0; i < inkN; i++) {
+    if (ink[j * inkN + i] > inkThr) line[Math.floor(j / inkN * h) * w + Math.floor(i / inkN * w)] = 1;
+  }
+  const r = Math.max(2, Math.round(0.022 * N));
+  for (const s of strokes || []) {
+    const p = s.points;
+    if (!p) continue;
+    for (let k = 0; k + 3 < p.length; k += 2) {
+      const L = Math.hypot(p[k + 2] - p[k], p[k + 3] - p[k + 1]) * N, m = Math.max(1, Math.ceil(L));
+      for (let t = 0; t <= m; t++) {
+        const x = Math.floor((p[k] + (p[k + 2] - p[k]) * t / m) * w), y = Math.floor((p[k + 1] + (p[k + 3] - p[k + 1]) * t / m) * h);
+        if (x >= 0 && y >= 0 && x < w && y < h) line[y * w + x] = 1;
+      }
+    }
+  }
+  const dl = chamfer(w, h, k => line[k] === 1);
+  const wall = new Uint8Array(w * h);
+  for (let k = 0; k < w * h; k++) wall[k] = dl[k] <= r ? 1 : 0;
+  // the outside: flooded from the top and the upper sides (a bust, a portrait or a sitting cat
+  // runs off the bottom of the frame; the bottom edge closes it)
+  const outside = new Uint8Array(w * h), q = [];
+  const seed = k => { if (!wall[k] && !outside[k]) { outside[k] = 1; q.push(k); } };
+  for (let i = 0; i < w; i++) seed(i);
+  for (let j = 0; j < h * 0.7; j++) { seed(j * w); seed(j * w + w - 1); }
+  while (q.length) {
+    const k = q.pop(), i = k % w, j = (k / w) | 0;
+    if (i > 0) seed(k - 1); if (i < w - 1) seed(k + 1); if (j > 0) seed(k - w); if (j < h - 1) seed(k + w);
+  }
+  // thin back by the thickening
+  const dOut = chamfer(w, h, k => outside[k] === 1);
+  const inside = new Uint8Array(w * h);
+  for (let k = 0; k < w * h; k++) inside[k] = !outside[k] && dOut[k] > r * 0.8 ? 1 : 0;
+  // the largest part
+  const lab = new Int32Array(w * h).fill(-1);
+  let best = -1, bestN = 0;
+  for (let s0 = 0, id = 0; s0 < w * h; s0++) {
+    if (!inside[s0] || lab[s0] >= 0) continue;
+    const st = [s0]; lab[s0] = id;
+    let cnt = 0;
+    while (st.length) {
+      const k = st.pop(); cnt++;
+      const i = k % w, j = (k / w) | 0;
+      for (const nk of [i > 0 ? k - 1 : -1, i < w - 1 ? k + 1 : -1, j > 0 ? k - w : -1, j < h - 1 ? k + w : -1]) {
+        if (nk >= 0 && inside[nk] && lab[nk] < 0) { lab[nk] = id; st.push(nk); }
+      }
+    }
+    if (cnt > bestN) { bestN = cnt; best = id; }
+    id++;
+  }
+  const data = new Uint8Array(w * h);
+  for (let k = 0; k < w * h; k++) data[k] = lab[k] === best && best >= 0 ? 255 : 0;
+  const mask = { w, h, data };
+  return { mask, outlines: traceMask(mask), kind: face ? 'portrait' : 'unknown', confidence: 0.3, standin: true, timings: {} };
+}
+
+/**
+ * How well the drawing gives the subject's silhouette: { iou, cover, score } where iou compares
+ * the region the drawn line encloses (rasterised; where the subject runs off the frame, the frame
+ * closes it) with the mask, and cover is the share of the mask's boundary within 2% of the line.
+ */
+export function silhouetteScore(geom, sil, { N = 200 } = {}) {
+  if (!geom || !sil) return null;
+  sil = closeUpSilhouette(sil);   // (scored against the shape it was drawn from)
+  // a landscape is scored against the land under its skyline
+  if (isScene(sil)) sil = { mask: groundMask(sil.skyline, 128) };
+  if (!sil.mask || !sil.mask.data) return null;
+  const { w: mw, h: mh, data: md } = sil.mask;
+  const w = N, h = N, mask = new Uint8Array(w * h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) mask[j * w + i] = md[Math.floor((j + 0.5) / h * mh) * mw + Math.floor((i + 0.5) / w * mw)] > 127 ? 1 : 0;
+  const line = new Uint8Array(w * h), d = geom.data, n = geom.n;
+  let px = null, py = null;
+  for (let t = 0; t < n; t++) {
+    const x = (d[t * STRIDE] + 1) / 2 * w, y = (d[t * STRIDE + 1] + 1) / 2 * h;
+    if (px !== null) {
+      const m = Math.max(1, Math.ceil(Math.hypot(x - px, y - py)));
+      for (let u = 1; u <= m; u++) {
+        const xi = Math.floor(px + (x - px) * u / m), yi = Math.floor(py + (y - py) * u / m);
+        if (xi >= 0 && yi >= 0 && xi < w && yi < h) line[yi * w + xi] = 1;
+      }
+    }
+    px = x; py = y;
+  }
+  const dLine = chamfer(w, h, k => line[k] === 1);
+  // the eye closes small gaps in an outline: the line is thickened by 2% of the frame for the
+  // fill (a gap narrower than about 4% does not leak), and the region thinned back after
+  const r = Math.max(1, 0.02 * N), e = Math.round(0.05 * N);
+  const inFrame = k => { const i = k % w, j = (k / w) | 0; return i >= e && j >= e && i < w - e && j < h - e; };
+  const wall = k => dLine[k] <= r || (!inFrame(k) && mask[k]);
+  const outside = new Uint8Array(w * h), q = [];
+  const seed = k => { if (!outside[k] && !wall(k)) { outside[k] = 1; q.push(k); } };
+  for (let k = 0; k < w * h; k++) if (!inFrame(k) && !mask[k]) seed(k);
+  while (q.length) {
+    const k = q.pop(), i = k % w, j = (k / w) | 0;
+    if (i > 0) seed(k - 1); if (i < w - 1) seed(k + 1); if (j > 0) seed(k - w); if (j < h - 1) seed(k + w);
+  }
+  const dOutside = chamfer(w, h, k => outside[k] === 1);
+  let I = 0, U = 0, B = 0, Bc = 0;
+  const near = 0.02 * N;
+  for (let k = 0; k < w * h; k++) {
+    if (!inFrame(k)) continue;
+    const enc = !outside[k] && dOutside[k] > r - 0.006 * N, m = mask[k] === 1;
+    if (enc && m) I++;
+    if (enc || m) U++;
+    if (m) {
+      const i = k % w, j = (k / w) | 0;
+      if (!mask[k - 1] || !mask[k + 1] || !mask[k - w] || !mask[k + w]) { B++; if (dLine[k] <= near) Bc++; }
+
+    }
+  }
+  const iou = U ? I / U : 0, cover = B ? Bc / B : 0;
+  return { iou: +iou.toFixed(3), cover: +cover.toFixed(3), score: +(0.5 * iou + 0.5 * cover).toFixed(3) };
+}
+
+/** Everything below an open skyline (left to right, frame fractions) as a 0/255 mask. */
+function groundMask(sky, n) {
+  const top = new Float32Array(n).fill(2);
+  for (let k = 0; k + 3 < sky.length; k += 2) {
+    const x0 = sky[k] * n, x1 = sky[k + 2] * n, y0 = sky[k + 1], y1 = sky[k + 3];
+    const a = Math.max(0, Math.floor(Math.min(x0, x1))), b = Math.min(n - 1, Math.ceil(Math.max(x0, x1)));
+    for (let i = a; i <= b; i++) { const t = x1 === x0 ? 0 : Math.max(0, Math.min(1, (i + 0.5 - x0) / (x1 - x0))); top[i] = Math.min(top[i], y0 + (y1 - y0) * t); }
+  }
+  const data = new Uint8Array(n * n);
+  for (let i = 0; i < n; i++) if (top[i] <= 1) for (let j = 0; j < n; j++) if ((j + 0.5) / n > top[i]) data[j * n + i] = 255;
+  return { w: n, h: n, data };
+}
+function maskShare(m) {
+  if (!m || !m.data) return 0;
+  let c = 0;
+  for (let k = 0; k < m.data.length; k++) if (m.data[k] > 127) c++;
+  return c / m.data.length;
+}
+
+/** A scene, drawn as its skyline plus a landmark: a landscape, a small subject on a skyline (a
+ *  setting sun, a far figure), or a thing that is not the whole picture standing in a view with a
+ *  real skyline (a lighthouse whose house is the mask: the tower is in the skyline). */
+export function isScene(sil) {
+  if (!sil || !sil.skyline || sil.skyline.length < 8) return false;
+  if (sil.kind === 'landscape') return true;
+  const a = maskShare(sil.mask);
+  return a < 0.1 || ((sil.kind === 'object' || sil.kind === 'unknown') && a < 0.3);
+}
+
+/** A landmark that stands up on the land (a tree, a roof, a peak, a closed shape), not a U or a
+ *  hook hanging off the skyline: its top lies inside the stroke, both ends well below it. */
+function standsUp(p, closed) {
+  if (closed) return true;
+  const n = p.length / 2;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let k = 0; k < p.length; k += 2) { x0 = Math.min(x0, p[k]); x1 = Math.max(x1, p[k]); y0 = Math.min(y0, p[k + 1]); y1 = Math.max(y1, p[k + 1]); }
+  const h = y1 - y0;
+  if (x0 < 0.04 || y0 < 0.04 || x1 > 0.96 || y1 > 0.96) return false;   // (a whole thing, not cut by the frame)
+  return h > 0.02 && x1 - x0 > 0.02 && p[1] - y0 > 0.35 * h && p[2 * n - 1] - y0 > 0.35 * h;
+}
+
+/** An extreme close-up (the person fills the frame): the face is the shape to draw, so the face
+ *  part (with the hair when that still leaves room) stands in for the whole silhouette. */
+function closeUpSilhouette(sil, face = null) {
+  if (sil && sil.mask && sil.parts && sil.parts.face && sil.parts.face.data && maskShare(sil.mask) > 0.8) {
+    const f = sil.parts.face, h = sil.parts.hair;
+    // the face itself runs off the frame (a very close crop): its oval from the landmarks, cut by
+    // the frame, is the contour
+    const oval = face && faceOval(face.landmarks);
+    if (oval && outsideShare(oval) > 0.3) return { ...sil, mask: f, outlines: [], closeUp: true, oval };
+    let m = f;
+    if (h && h.data && h.w === f.w && h.h === f.h) {
+      const u = new Uint8Array(f.data.length);
+      for (let k = 0; k < u.length; k++) u[k] = f.data[k] > 127 || h.data[k] > 127 ? 255 : 0;
+      if (maskShare({ data: u }) < 0.75) m = { w: f.w, h: f.h, data: u };
+    }
+    if (maskShare(m) > 0.05) return { ...sil, mask: m, outlines: traceMask(m), closeUp: true };
+  }
+  return sil;
+}
+
+// ------------------------------------------------------------------ hard cases
+// (close crops, thin things, a portrait's neck, a pale animal's face, a landscape's second line and
+// its trees)
+
+// the face oval's landmark ring (MediaPipe face mesh), as in silhouette.js
+const OVAL_IDX = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149,
+  150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+function faceOval(lm) {
+  if (!lm || lm.length < 956) return null;
+  const o = [];
+  for (const i of OVAL_IDX) o.push(lm[2 * i], lm[2 * i + 1]);
+  return o;
+}
+/** Share of a closed polyline's length that lies outside the frame. */
+function outsideShare(p) {
+  let a = 0, b = 0;
+  for (let k = 0, n = p.length / 2; k < n; k++) {
+    const j = (k + 1) % n, L = Math.hypot(p[2 * j] - p[2 * k], p[2 * j + 1] - p[2 * k + 1]);
+    const mx = (p[2 * j] + p[2 * k]) / 2, my = (p[2 * j + 1] + p[2 * k + 1]) / 2;
+    b += L; if (mx < 0 || mx > 1 || my < 0 || my > 1) a += L;
+  }
+  return b ? a / b : 0;
+}
+
+/** Circle through a polyline's points (algebraic fit): centre, radius, rms misfit and how many
+ *  degrees of the circle the points cover. */
+function fitCircle(p) {
+  const n = p.length / 2;
+  let mx = 0, my = 0;
+  for (let k = 0; k < n; k++) { mx += p[2 * k]; my += p[2 * k + 1]; }
+  mx /= n; my /= n;
+  let suu = 0, svv = 0, suv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
+  for (let k = 0; k < n; k++) {
+    const u = p[2 * k] - mx, v = p[2 * k + 1] - my;
+    suu += u * u; svv += v * v; suv += u * v; suuu += u * u * u; svvv += v * v * v; suvv += u * v * v; svuu += v * u * u;
+  }
+  const e = 0.5 * (suuu + suvv), f = 0.5 * (svvv + svuu), det = suu * svv - suv * suv;
+  if (Math.abs(det) < 1e-14) return null;
+  const uc = (svv * e - suv * f) / det, vc = (suu * f - suv * e) / det;
+  const r = Math.sqrt(uc * uc + vc * vc + (suu + svv) / n), cx = uc + mx, cy = vc + my;
+  let rms = 0;
+  const bins = new Uint8Array(24);
+  for (let k = 0; k < n; k++) {
+    const dx = p[2 * k] - cx, dy = p[2 * k + 1] - cy;
+    rms += (Math.hypot(dx, dy) - r) ** 2;
+    bins[Math.min(23, Math.floor((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI) * 24))] = 1;
+  }
+  let cover = 0;
+  for (const b of bins) cover += b;
+  return { cx, cy, r, rms: Math.sqrt(rms / n), cover: cover * 15 };
+}
+
+/**
+ * A thin subject the mask cannot hold (a bicycle: the touch finds a blob of frame and part of a
+ * wheel): the line model's structure instead, round rims as circles plus the frame's longer lines,
+ * all around the subject's box. Null when no rim is found (then the mask route goes on).
+ */
+function structureStrokes(strokes, sil, P) {
+  const { w, h, data } = sil.mask;
+  let x0 = 1, x1 = 0, y0 = 1, y1 = 0;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (data[j * w + i] > 127) {
+    x0 = Math.min(x0, i / w); x1 = Math.max(x1, (i + 1) / w); y0 = Math.min(y0, j / h); y1 = Math.max(y1, (j + 1) / h);
+  }
+  if (x1 <= x0) return null;
+  const pad = 0.08;
+  const inBox = (x, y) => x > x0 - pad && x < x1 + pad && y > y0 - pad && y < y1 + pad;
+  const circles = [];
+  for (const s of strokes || []) {
+    const p = s.points;
+    if (!p || p.length < 24 || polyLen(p, !!s.closed) < 0.1) continue;
+    let inb = 0;
+    for (let k = 0; k < p.length; k += 2) if (inBox(p[k], p[k + 1])) inb++;
+    if (inb < 0.8 * p.length / 2) continue;
+    const c = fitCircle(p);
+    if (!c || c.r < 0.06 || c.r > 0.3 || c.rms > 0.12 * c.r || c.cover < 90 || !inBox(c.cx, c.cy)) continue;
+    circles.push(c);
+  }
+  circles.sort((a, b) => b.cover - a.cover || b.r - a.r);
+  const wheels = [];
+  for (const c of circles) {
+    if (wheels.some(q => Math.hypot(q.cx - c.cx, q.cy - c.cy) < 0.7 * Math.max(q.r, c.r))) continue;
+    if (!wheels.length && (c.cover < 120 || c.rms > 0.08 * c.r)) continue;         // (the first rim shows most of itself)
+    if (wheels.length && Math.abs(Math.log(c.r / wheels[0].r)) > 0.5) continue;   // (two wheels, one size)
+    wheels.push(c);
+    if (wheels.length >= 2) break;
+  }
+  if (!wheels.length) return null;
+  const out = [];
+  for (const q of wheels) {
+    const pts = [];
+    for (let k = 0; k < 160; k++) { const a = -Math.PI / 2 + 2 * Math.PI * k / 160; pts.push(q.cx + q.r * Math.cos(a), q.cy + q.r * Math.sin(a)); }
+    for (const run of offBorderRuns(Float32Array.from(pts), 0.006, 0.05)) out.push(stroke(run.pts, 'outline', 1, run.closed, 0.7, { silhouette: true, structure: 'wheel' }));
+  }
+  // the frame and the rest: the model's longer lines in the box, off the rims
+  const onRim = (x, y) => wheels.some(q => Math.abs(Math.hypot(x - q.cx, y - q.cy) - q.r) < 0.025);
+  const cands = [];
+  for (const s of strokes || []) {
+    const p = s.points;
+    if (!p || p.length < 8) continue;
+    let run = [];
+    const flush = () => {
+      if (run.length >= 8) { const len = polyLen(run, false); if (len >= 0.05) cands.push({ s, pts: run, len, v: (s.saliency ?? 0.5) * Math.sqrt(len) }); }
+      run = [];
+    };
+    for (let k = 0; k < p.length; k += 2) {
+      if (inBox(p[k], p[k + 1]) && !onRim(p[k], p[k + 1])) run.push(p[k], p[k + 1]); else flush();
+    }
+    flush();
+  }
+  cands.sort((a, b) => b.v - a.v);
+  for (const c of cands.slice(0, P.other + 2)) out.push(stroke(c.pts, c.s.kind || 'other', c.s.saliency ?? 0.5, false, c.s.dark ?? 0.5, { silhouette: true, structure: 'frame' }));
+  return out;
+}
+
+/** Face size and chin from the landmarks when the shape is wider than the face at the chin (long
+ *  hair falling past it: the hood look), else null. */
+function hoodInfo(M, face) {
+  const ov = faceOval(face && face.landmarks);
+  if (!ov) return null;
+  let fx0 = 1, fx1 = 0, fy0 = 1, fy1 = 0;
+  for (let k = 0; k < ov.length; k += 2) { fx0 = Math.min(fx0, ov[k]); fx1 = Math.max(fx1, ov[k]); fy0 = Math.min(fy0, ov[k + 1]); fy1 = Math.max(fy1, ov[k + 1]); }
+  const fw = fx1 - fx0, fh = fy1 - fy0;
+  if (fw < 0.05 || fy1 > 0.9) return null;
+  // (wide at the chin and already beside the eyes: hair framing the face, not shoulders alone)
+  const width = y => { let a = 1, b = 0; for (let i = 0; i < 200; i++) { const x = i / 200; if (M.inside(x, y)) { a = Math.min(a, x); b = Math.max(b, x); } } return b - a; };
+  return width(fy1 + 0.02) > 1.5 * fw && width(fy0 + 0.5 * fh) > 1.4 * fw ? { chin: fy1, fw, fh, cx: (fx0 + fx1) / 2 } : null;
+}
+
+/**
+ * A pale animal's face (a white dog: the line model finds almost nothing there): the darkest
+ * compact spots in the head's part of the shape, eyes and nose, as small closed marks, where no
+ * feature is drawn yet.
+ */
+function animalSpots(M, sil, dark, have) {
+  if (!dark || !dark.data) return [];
+  const { w, h, data } = sil.mask;
+  let y0 = 1, y1 = 0;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (data[j * w + i] > 127) { y0 = Math.min(y0, j / h); y1 = Math.max(y1, (j + 1) / h); }
+  if (y1 <= y0) return [];
+  const headY = y0 + 0.4 * (y1 - y0);
+  const G = dark.w, D = dark.data;
+  const at = (i, j) => D[Math.max(0, Math.min(G - 1, j)) * G + Math.max(0, Math.min(G - 1, i))];
+  let sum = 0, cnt = 0;
+  for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) {
+    const x = (i + 0.5) / G, y = (j + 0.5) / G;
+    if (y < headY && M.inside(x, y)) { sum += at(i, j); cnt++; }
+  }
+  if (cnt < 20) return [];
+  const mean = sum / cnt, thr = Math.max(0.5, mean + 0.28);
+  if (mean > 0.42) return [];   // (a pale coat: on a dark bird or a dark horse every spot is a guess)
+  const spots = [];
+  for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) {
+    const x = (i + 0.5) / G, y = (j + 0.5) / G, v = at(i, j);
+    if (y >= headY || v < thr || M.depth(x, y) < 0.05) continue;   // (well inside: not an ear's dark lining)
+    let ring = 0;
+    for (let q = -3; q <= 3; q++) ring += at(i + q, j - 3) + at(i + q, j + 3) + at(i - 3, j + q) + at(i + 3, j + q);
+    if (v - ring / 28 < 0.25) continue;   // (a spot, not a shadow along a side)
+    // (round: lighter a little way off in all four directions, so a tabby's stripe is no spot)
+    if (Math.max(at(i - 3, j), at(i + 3, j), at(i, j - 3), at(i, j + 3)) > v - 0.12) continue;
+    let peak = true;
+    for (let dj = -1; dj <= 1 && peak; dj++) for (let di = -1; di <= 1; di++) if ((di || dj) && at(i + di, j + dj) > v) { peak = false; break; }
+    if (peak) spots.push({ x, y, v });
+  }
+  spots.sort((a, b) => b.v - a.v);
+  const keep = [];
+  for (const s of spots) {
+    if (keep.length >= 3) break;
+    if (keep.some(q => Math.hypot(q.x - s.x, q.y - s.y) < 0.05)) continue;
+    if (have.some(q => Math.hypot(q.cx - s.x, q.cy - s.y) < 0.035)) continue;
+    keep.push(s);
+  }
+  // the lowest of three is the nose; a spot's mark follows its dark patch's size
+  keep.sort((a, b) => a.y - b.y);
+  return keep.map((s, i) => {
+    let r = 0.008;
+    for (let q = 1; q <= 4; q++) if (at(Math.floor(s.x * G) + q, Math.floor(s.y * G)) > 0.8 * s.v || at(Math.floor(s.x * G) - q, Math.floor(s.y * G)) > 0.8 * s.v) r = 0.008 + 0.5 * q / G;
+    r = Math.min(0.022, r);
+    const pts = [];
+    for (let k = 0; k < 20; k++) { const a = 2 * Math.PI * k / 20; pts.push(s.x + r * Math.cos(a), s.y + 0.8 * r * Math.sin(a)); }
+    const kind = keep.length === 3 && i === 2 ? 'nose' : 'eye';
+    return { s: { kind, saliency: 1, dark: 0.8 }, pts, closed: true, feat: true, cx: s.x, cy: s.y };
+  });
+}
+
+/** The skyline's height at x (frame fractions; sky resampled, left to right). */
+function skyAt(sky, x) {
+  let best = Infinity, y = 0;
+  for (let k = 0; k < sky.length; k += 2) { const d = Math.abs(sky[k] - x); if (d < best) { best = d; y = sky[k + 1]; } }
+  return y;
+}
+
+/** A landscape's second line: the longest calm line of the model's under the skyline (a nearer
+ *  ridge, a shoreline, the top of a forest). Open polyline or null. */
+function secondLine(strokes, sky) {
+  let best = null, bv = 0;
+  for (const s of strokes || []) {
+    const p = s.points;
+    if (!p || p.length < 20) continue;
+    let run = [];
+    const flush = () => {
+      if (run.length >= 12) {
+        let a = 1, b = 0;
+        for (let k = 0; k < run.length; k += 2) { a = Math.min(a, run[k]); b = Math.max(b, run[k]); }
+        const ext = b - a, len = polyLen(run, false), rise = Math.abs(run[run.length - 1] - run[1]);
+        if (ext > 0.25 && len < 1.8 * ext && rise < 0.6 * ext) {
+          const v = ext * (0.5 + (s.saliency ?? 0.5));
+          if (v > bv) { bv = v; best = run; }
+        }
+      }
+      run = [];
+    };
+    for (let k = 0; k < p.length; k += 2) {
+      const x = p[k], y = p[k + 1];
+      if (x > 0.02 && x < 0.98 && y < 0.93 && y > skyAt(sky, x) + 0.06) run.push(x, y); else flush();
+    }
+    flush();
+  }
+  if (!best) return null;
+  // left to right
+  if (best[0] > best[best.length - 2]) { const r = []; for (let k = best.length - 2; k >= 0; k -= 2) r.push(best[k], best[k + 1]); best = r; }
+  return best;
+}
+
+/**
+ * The tree line as a few trees, not a comb: the forest's top (sil.treeline, one height per
+ * column, -1 where there is none) calmed to a line, and a small spruce drawn at each of its most
+ * telling tips (the tallest over their neighbours, spread out). Returns { base, trees } or null.
+ */
+function treeGlyphs(tl, count, sky) {
+  if (!tl || tl.length < 40 || count < 1) return null;
+  const n = tl.length / 2, xs = [], ys = [];
+  for (let k = 0; k < n; k++) if (tl[2 * k + 1] >= 0) { xs.push(tl[2 * k]); ys.push(tl[2 * k + 1]); }
+  if (xs.length < 0.3 * n) return null;
+  const m = xs.length;
+  // (a column can pick a step lower down: a running median calms the profile first)
+  { const R = 1, c = ys.slice(); for (let i = 0; i < m; i++) { const w = c.slice(Math.max(0, i - R), Math.min(m, i + R + 1)).sort((a, b) => a - b); ys[i] = w[w.length >> 1]; } }
+  // the forest's body: the lower envelope over a window, smoothed
+  const Wn = Math.max(3, Math.round(m * 0.04));
+  const env = ys.map((_, i) => { let v = -1; for (let q = Math.max(0, i - Wn); q <= Math.min(m - 1, i + Wn); q++) v = Math.max(v, ys[q]); return v; });
+  const sm = env.map((_, i) => { let s = 0, c = 0; for (let q = Math.max(0, i - Wn); q <= Math.min(m - 1, i + Wn); q++) { s += env[q]; c++; } return s / c; });
+  const tips = [];
+  for (let i = 1; i < m - 1; i++) {
+    const prom = sm[i] - ys[i];
+    if (prom < 0.02 || ys[i] > ys[i - 1] || ys[i] > ys[i + 1]) continue;
+    if (xs[i] < 0.05 || xs[i] > 0.95 || ys[i] - skyAt(sky, xs[i]) < 0.02) continue;
+    tips.push({ x: xs[i], y: ys[i], base: sm[i], prom });
+  }
+  tips.sort((a, b) => b.prom - a.prom);
+  const pick = [];
+  for (const t of tips) {
+    if (pick.length >= count) break;
+    if (pick.some(q => Math.abs(q.x - t.x) < 0.14)) continue;
+    pick.push(t);
+  }
+  if (!pick.length) return null;
+  // the base line, left to right, broken where a tree stands (the tree's own outline carries on)
+  const trees = pick.map(t => {
+    const hgt = Math.min(0.15, Math.max(0.08, t.base - t.y + 0.03)), wd = 0.42 * hgt, x = t.x, b = t.y + hgt;
+    const L = [[-0.5, 0], [-0.18, -0.3], [-0.36, -0.3], [-0.12, -0.62], [-0.26, -0.62], [0, -1]];
+    const pts = [];
+    for (const [u, v] of L) pts.push(x + u * wd, b + v * hgt);
+    for (let k = L.length - 2; k >= 0; k--) pts.push(x - L[k][0] * wd, b + L[k][1] * hgt);
+    return { pts, x0: x - 0.5 * wd, x1: x + 0.5 * wd, b };
+  });
+  const base = [];
+  let cur = [];
+  for (let i = 0; i < m; i += 2) {
+    const x = xs[i];
+    if (x < 0.07 || x > 0.91 || trees.some(t => x > t.x0 - 0.01 && x < t.x1 + 0.01)) { if (cur.length >= 8) base.push(cur); cur = []; continue; }
+    cur.push(x, sm[i]);
+  }
+  if (cur.length >= 8) base.push(cur);
+  return { base: base.filter(b => polyLen(b, false) > 0.06), trees };
 }

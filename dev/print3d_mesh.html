@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print Mesh Lab</title>
+<style>
+  :root { --bg: #f3f1ec; --fg: #1d1c1a; --muted: #6f6b64; --line: #d9d5cc; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #17171a; --fg: #e9e6e0; --muted: #8d8a84; --line: #2c2c33; } }
+  :root[data-theme="dark"] { --bg: #17171a; --fg: #e9e6e0; --muted: #8d8a84; --line: #2c2c33; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, sans-serif; }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+  #sheet { display: block; margin: 12px auto; max-width: 100%; }
+  #info { color: var(--muted); padding: 0 16px 16px; white-space: pre-wrap; font: 12px/1.45 ui-monospace, monospace; }
+</style>
+<header><b>Print mesh lab</b><span id="what">…</span></header>
+<canvas id="sheet" width="1500" height="760"></canvas>
+<div id="info"></div>
+<script type="module" src="print3d_mesh.js"></script>
+</html>

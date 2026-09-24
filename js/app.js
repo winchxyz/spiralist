@@ -45,6 +45,9 @@ const DEFAULT_DOC = {
   // a style A-D, how much of the photo it keeps (detail), hatching, the hand's wobble, a real tool
   // at its real width on an A4 sheet, the paper and the light. doc.brush / doc.paper follow it.
   lineart: { style: 'matisse', detail: 0.45, tool: 'fountain', toolMm: 0.55, paper: 'cream', light: 'window', hatch: 0, wobble: 0.3 },
+  // Line art's subject, tapped by the user: [x, y] in fractions of the photo (so it survives a
+  // reframe), or null for automatic. It belongs to the photo like crop: saved with it, undoable.
+  subject: null,
   // the other mode's materials (tool, ink, paper, tone detail), restored when switching back
   stash: {},
 };
@@ -97,8 +100,11 @@ function mergeDoc(d) {
   if (!['window', 'raking', 'overhead'].includes(la.light)) la.light = 'window';
   for (const k of ['detail', 'hatch', 'wobble']) la[k] = Number.isFinite(+la[k]) ? clamp(+la[k], 0, 1) : base.lineart[k];
   if (out.mode === 'lineart') { out.brush = la.tool; out.paper = la.paper; if (out.inkSource === 'photo') out.inkSource = 'swatch'; }
+  out.subject = null;          // (it comes back with its photo, see setPhoto)
   return out;
 }
+/** A saved subject tap: [x, y] photo fractions, else null. */
+const validSubject = s => (Array.isArray(s) && s.length === 2 && s.every(v => Number.isFinite(+v) && +v >= 0 && +v <= 1) ? [+s[0], +s[1]] : null);
 /**
  * The auto sheet: the smallest standard size on which this tool can draw a face in this style. A
  * sheet picked by hand that the new tool or style cannot fill (a fine pen on a 150 cm sheet picked
@@ -119,7 +125,7 @@ function mergePrefs(p) {
   return { ...base, ...p, film: { ...base.film, ...p.film }, download: { ...base.download, ...p.download } };
 }
 function persist() {
-  const { crop, ...rest } = doc;   // framing belongs to the photo; it is saved with it
+  const { crop, subject, ...rest } = doc;   // framing (and Line art's subject tap) belong to the photo; saved with it
   saveSettings({ doc: rest, prefs });
 }
 
@@ -554,6 +560,8 @@ function drawOverlay(now) {
     return;
   }
 
+  // Line art: choosing the subject (the faint photo and the shape found so far), a pin after a tap
+  if (lineart() && (subjectPick.active || subjectPick.flash > now)) { drawSubjectOverlay(now, S, o, cx, cy, R); return; }
   // maze start point: crosshair while choosing, a pin that fades after a pick
   if (!realistic() && doc.line.path !== 'spiral' && (picking.active || picking.flash > now)) {
     const px = picking.active && picking.hover ? picking.hover : [doc.free.x, doc.free.y];
@@ -722,12 +730,13 @@ function commit(label) { history.commit(snapshot(), label); persist(); if (label
 function restore(d) {
   if (!d) return;
   const cropChanged = JSON.stringify(d.crop) !== JSON.stringify(doc.crop);
+  const subjectChanged = JSON.stringify(d.subject ?? null) !== JSON.stringify(doc.subject ?? null);
   doc = d;
   syncControls();
   invalidate('geom');
   refreshThumbs(cropChanged);
   persist();
-  if (cropChanged) saveSession();
+  if (cropChanged || subjectChanged) saveSession();
 }
 $('btnUndo').addEventListener('click', () => { const l = history.undoLabel; restore(history.undo()); if (l) announce(`Undid ${l}`); });
 $('btnRedo').addEventListener('click', () => { const l = history.redoLabel; restore(history.redo()); if (l) announce(`Redid ${l}`); });
@@ -1412,12 +1421,16 @@ function refreshStyleThumbs() {
 // One-line drawings the way continuous-line artists make them (js/lineart/index.js): a line model
 // reads the photo's contours once per photo + framing + detail (cached), then a style A-D plans ONE
 // line through them with a hand's pace and pressure (in a worker). The first use downloads the
-// line model (~45 MB, once; the service worker keeps it for offline use), with a card on the sheet.
+// line model and the silhouette models (~54 MB, once; the service worker keeps them for offline
+// use), with a card on the sheet. Silhouette first: the subject's outer shape is the main line, and
+// "Tap the subject" (doc.subject) picks another thing to outline.
 let LA = null;                      // the js/lineart/index.js module, once loaded
 const lineState = {
   engine: null, linesKey: '', linesWant: '', lines: null, inflight: false, lastFrame: '',
   key: '', want: '', geom: null, failed: '', error: null, revealNext: false, prepared: false,
 };
+// "Tap the subject": a pick mode like the maze start point; the tap is kept as doc.subject
+const subjectPick = { active: false, hover: null, flash: 0, at: null };
 const lineStyle = id => (LA ? LA.lineStyleById?.(id) || LA.LINE_STYLES.find(s => s.id === id) : null);
 const lineModP = import('./lineart/index.js').then(m => {
   if (!m.LineArtEngine || !Array.isArray(m.LINE_STYLES)) throw new Error('lineart: engine missing');
@@ -1437,7 +1450,7 @@ function lineOpts(d = doc) {
   return { sheetMm: LINE_SHEET_MM, tool: la.tool, toolMm: la.toolMm, wobble: la.wobble, hatch: la.hatch, seed: d.line.seed || 1 };
 }
 const lineFrameKey = () => keyOf(photo.id, doc.crop);
-const lineLinesKey = () => keyOf(lineFrameKey(), doc.lineart.detail.toFixed(2));
+const lineLinesKey = () => keyOf(lineFrameKey(), doc.lineart.detail.toFixed(2), subjectFrameTap() || 'auto');
 /** Something is still on its way for the current Line art drawing (tests wait on SP.building). */
 function lineBusy() {
   if (!LA || lineState.error) return !LA && !lineState.error;
@@ -1507,9 +1520,14 @@ async function requestLines(lk) {
     // a new photo or framing runs the model (seconds): say so on the sheet; a new detail only
     // re-traces the cached line map (a moment): the small "building" label is enough
     const fresh = lineState.lastFrame !== frame;
+    // silhouette first (js/lineart/silhouette.js): the subject's outer shape is the main line; a
+    // tapped subject re-runs only the silhouette (under a second), never the line model
+    const tap = subjectFrameTap(src, crop);
+    const onlyTap = !fresh && lineState.lastDetail === detail;
     if (fresh) gateProgress({ stage: 'read', loaded: 0, total: 1 }, 'read');
-    else setBuilding(true, 'Finding the lines…');
-    const r = await eng.lines(src.canvas, crop, { detail }, p => { if (fresh) gateProgress(p, 'read'); });
+    else setBuilding(true, onlyTap ? 'Finding the subject…' : 'Finding the lines…');
+    const r = await eng.lines(src.canvas, crop, { detail, silhouette: tap ? { tap } : true }, p => { if (fresh) gateProgress(p, 'read'); });
+    lineState.lastDetail = detail;
     lineState.lines = r;
     lineState.linesKey = lk;
     lineState.lastFrame = frame;
@@ -1528,6 +1546,146 @@ async function requestLines(lk) {
   }
 }
 
+// ---- the subject (silhouette first): what was found, and "Tap the subject" to choose it
+/** doc.subject (photo fractions) in frame fractions of this photo + crop; null when automatic or
+ *  when the framing no longer holds the tapped point. */
+function subjectFrameTap(src = photo, crop = doc.crop) {
+  const s = doc.subject;
+  if (!s || !src || !crop) return null;
+  const cv = src.canvas || src, w = cv.width, h = cv.height, D = cropDiameter(w, h, crop);
+  const a = (crop.rotation || 0) * Math.PI / 180, c = Math.cos(a), si = Math.sin(a);
+  const dx = (s[0] - crop.x) * w, dy = (s[1] - crop.y) * h;
+  const fx = 0.5 + (c * dx - si * dy) / D, fy = 0.5 + (si * dx + c * dy) / D;
+  return fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1 ? [+fx.toFixed(4), +fy.toFixed(4)] : null;
+}
+/** A point of the art frame (fractions) -> photo fractions (the inverse of frameCanvas). */
+function frameToPhoto(fx, fy, src = photo, crop = doc.crop) {
+  const cv = src.canvas || src, w = cv.width, h = cv.height, D = cropDiameter(w, h, crop);
+  const a = -(crop.rotation || 0) * Math.PI / 180, c = Math.cos(a), si = Math.sin(a);
+  const vx = (fx - 0.5) * D, vy = (fy - 0.5) * D;
+  return [clamp(crop.x + (c * vx - si * vy) / w, 0, 1), clamp(crop.y + (si * vx + c * vy) / h, 0, 1)];
+}
+function setSubjectPick(on) {
+  if (on && (!photo || framing.active || !lineart())) return;
+  if (on && picking.active) setPicking(false);
+  if (on) loupe.fit({ instant: true });
+  subjectPick.active = on;
+  subjectPick.hover = null;
+  $('sheet').classList.toggle('picking', on);
+  $('subjectHint').hidden = !on;
+  const b = $('btnPickSubject');
+  b.setAttribute('aria-pressed', String(on));
+  b.querySelector('span').textContent = on ? 'Cancel' : 'Tap the subject';
+  if (on) { finishDemo(); setPlaying(false); play.f = 1; announce('Tap the subject on the sheet. Escape cancels.'); }
+  drawOverlay.wasFull = true;
+  invalidate('render');
+}
+$('btnPickSubject').addEventListener('click', () => setSubjectPick(!subjectPick.active));
+$('btnSubjectAuto').addEventListener('click', () => {
+  if (subjectPick.active) setSubjectPick(false);
+  if (!doc.subject) return;
+  change(d => { d.subject = null; }, { label: 'Subject: automatic', thumbs: true });
+  saveSession();
+  announce('The subject is found automatically again');
+});
+$('sheet').addEventListener('pointermove', e => { if (subjectPick.active) { subjectPick.hover = sheetPointToCircle(e); invalidate('render'); } });
+$('sheet').addEventListener('pointerleave', () => { if (subjectPick.active) { subjectPick.hover = null; invalidate('render'); } });
+$('sheet').addEventListener('pointerdown', e => {
+  if (!subjectPick.active) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const [x, y] = sheetPointToCircle(e);
+  setSubjectPick(false);
+  if (!photo || !lineart()) return;
+  subjectPick.flash = performance.now() + 1800;
+  subjectPick.at = [x, y];
+  const p = frameToPhoto((x + 1) / 2, (y + 1) / 2);
+  change(d => { d.subject = [+p[0].toFixed(4), +p[1].toFixed(4)]; }, { label: 'Subject', thumbs: true });
+  saveSession();
+  announce('Finding the subject you tapped');
+  if (!reducedMotion()) lineState.revealNext = true;
+}, true);
+
+/** The row under the Line art numbers: what the silhouette found, and the tap control. */
+function updateSubject() {
+  const row = $('subjectRow');
+  if (!row) return;
+  row.hidden = !lineart() || !photo || !!lineState.error;
+  if (row.hidden) return;
+  const what = $('subjectWhat'), sub = $('subjectSub'), auto = $('btnSubjectAuto');
+  const tapped = !!doc.subject, inFrame = !!subjectFrameTap();
+  const lines = lineState.lines, have = lines && lineState.linesKey === lineLinesKey();
+  auto.hidden = !tapped;
+  $('btnPickSubject').disabled = !lines;
+  row.classList.remove('weak');
+  if (!have) {
+    what.textContent = tapped && inFrame ? 'Subject: finding what you tapped…' : 'Subject: finding it…';
+    sub.textContent = 'The outer shape of the subject is the main line; the features go inside it.';
+    return;
+  }
+  const sil = lines.features?.silhouette || null;
+  const d = LA?.describeSilhouette ? LA.describeSilhouette(sil) : { label: 'Subject', weak: false, scene: false };
+  what.textContent = d.label;
+  if (!sil) {
+    row.classList.add('weak');
+    sub.textContent = 'The shape finder could not run here, so the line follows the contours only.';
+  } else if (tapped && !inFrame) sub.textContent = 'The point you tapped is outside this framing, so the subject is found automatically.';
+  // (a tap cannot move a close-up's outline: the face fills the frame, so its edge is the outline)
+  else if (tapped && lines.tapOutcome === 'closeup') sub.textContent = 'The face fills the frame, so the outline stays at the frame edge: a tap cannot change it. Frame the photo wider to give it a shape.';
+  else if (tapped && lines.tapOutcome === 'same') sub.textContent = 'Your tap chose the same shape the finder had found.';
+  else if (tapped) sub.textContent = 'Chosen by your tap: the outline follows the thing under it.';
+  else if (d.weak) { row.classList.add('weak'); sub.textContent = 'Not sure what the subject is. Tap it on the sheet and the outline will follow it.'; }
+  else if (d.scene) sub.textContent = 'Drawn as a skyline and a few landmarks. To draw one thing instead, tap it on the sheet.';
+  else sub.textContent = 'Found automatically. Wrong shape? Tap the subject on the sheet.';
+}
+
+/** Pick mode on the sheet: the photo shows faintly with the shape found so far; after a tap, a pin. */
+function drawSubjectOverlay(now, S, o, cx, cy, R) {
+  const u = S / 100;
+  if (subjectPick.active && photo) {
+    octx.save();
+    clipArt(octx, cx, cy, R); octx.clip();
+    octx.globalAlpha = 0.35;
+    drawPhotoInCircle(octx, cx, cy, R);
+    octx.restore();
+    const sil = lineState.lines?.features?.silhouette;
+    if (sil) {
+      octx.save();
+      octx.setLineDash([1.2 * u, 0.9 * u]);
+      octx.lineWidth = 0.4 * u;
+      octx.strokeStyle = 'rgba(196,61,22,.95)';
+      const path = (p, closed) => {
+        octx.beginPath();
+        for (let k = 0; k < p.length; k += 2) {
+          const [px, py] = sheetToOverlay(p[k] * 2 - 1, p[k + 1] * 2 - 1);
+          k ? octx.lineTo(px, py) : octx.moveTo(px, py);
+        }
+        if (closed) octx.closePath();
+        octx.stroke();
+      };
+      for (const p of sil.outlines || []) path(p, true);
+      if (sil.skyline && sil.skyline.length >= 8) path(sil.skyline, false);
+      octx.restore();
+    }
+  }
+  const px = subjectPick.active ? subjectPick.hover : subjectPick.at;
+  if (px) {
+    const [mx, my] = sheetToOverlay(px[0], px[1]);
+    octx.save();
+    octx.globalAlpha = subjectPick.active ? 1 : Math.min(1, (subjectPick.flash - now) / 600);
+    octx.lineWidth = 0.45 * u;
+    octx.strokeStyle = '#c43d16';
+    octx.fillStyle = 'rgba(196,61,22,.18)';
+    octx.beginPath(); octx.arc(mx, my, 2.6 * u, 0, Math.PI * 2); octx.fill(); octx.stroke();
+    octx.fillStyle = '#c43d16';
+    octx.beginPath(); octx.arc(mx, my, 0.6 * u, 0, Math.PI * 2); octx.fill();
+    octx.restore();
+  }
+  lastToolBox = null;
+  drawOverlay.wasFull = true;   // clear the whole overlay next frame
+  if (!subjectPick.active) invalidate('render');
+}
+
 // The card on the sheet: the one-time download (real bytes), then reading the photo (the model
 // gives no steps, so the bar follows the time a read usually takes and says the seconds). The card
 // belongs to Line art only: in the other modes the download and the read go on unseen, and the card
@@ -1541,6 +1699,7 @@ function gateReveal() {
 function syncGate() {
   const el = $('lineGate');
   if (el) el.hidden = !(gate.on && lineart());
+  if (subjectPick.active && !lineart()) setSubjectPick(false);   // (the mode changed while choosing)
 }
 function gateProgress(p0, phase) {
   const el = $('lineGate');
@@ -1730,6 +1889,7 @@ function updateLineInfo() {
   if (empty) note.textContent = 'No clear contours in this photo, so there is little for a line artist to draw. Try a photo with a clear subject: a face, an animal or an object.';
   else if (fallback) note.textContent = 'The line model could not load here, so a simpler edge finder read the photo: the lines are rougher and follow shadows more. It is still one line.';
   updateScaleCaption(current ? g : null);
+  updateSubject();
 }
 
 function syncLine() {
@@ -1994,11 +2154,13 @@ function scheduleIdleWork() {
 }
 
 // ------------------------------------------------------------------------------------ photos
-async function setPhoto(img, { sample = false, crop = null, demo = true, announceIt = true } = {}) {
+async function setPhoto(img, { sample = false, crop = null, subject = null, demo = true, announceIt = true } = {}) {
   photo = { ...img, id: ++photoSeq, sample };
   lineState.revealNext = lineart();
   loupe.fit({ instant: true });
+  if (subjectPick.active) setSubjectPick(false);
   doc.crop = crop ? { ...CROP_DEFAULTS, ...crop } : autoCrop(img);
+  doc.subject = validSubject(subject);          // a new photo starts automatic; a saved one keeps its tap
   delete thumbCache.rk;
   $('fileName').textContent = sample ? `${img.name} (sample)` : img.name;
   geom = null;
@@ -2019,7 +2181,7 @@ async function saveSession() {
   saveSession.t = setTimeout(async () => {
     try {
       if (!photo.blob) photo.blob = await encodeForStorage(photo.canvas);
-      await savePhoto({ blob: photo.blob, name: photo.name, crop: doc.crop, savedAt: Date.now() });
+      await savePhoto({ blob: photo.blob, name: photo.name, crop: doc.crop, subject: doc.subject ?? null, savedAt: Date.now() });
     } catch { /* storage is best-effort */ }
   }, 500);
 }
@@ -2288,6 +2450,7 @@ $('menu').addEventListener('click', async e => {
   topMenu.close();
   if (act === 'open') pickFile();
   if (act === 'shortcuts') $('keysDialog').showModal();
+  if (act === 'print3d') openPrint3d();
   if (act === 'forget') { await forgetPhoto(); toast('Your saved photo was removed from this browser.'); $('btnContinue').hidden = true; }
   if (act === 'reset') {
     if (!confirm('Reset every setting and forget the saved photo?')) return;
@@ -2361,6 +2524,32 @@ for (const id of ['btnFilm', 'mFilm']) {
 $('btnDownload').addEventListener('click', () => openDownload());
 $('mSave').addEventListener('click', () => openDownload());
 
+// 3D print (js/print3d/dialog.js): loaded on first use; meshes are built in its worker
+let print3d = null;
+async function openPrint3d() {
+  if (!geom) return toast('Choose a photo first.');
+  if (!print3d) {
+    const m = await import('./print3d/dialog.js');
+    print3d = m.createPrint3DDialog({
+      get geom() { return geom; }, get mode() { return doc.mode; }, get photoName() { return photo?.name || ''; },
+      get field() { return !lineart() && !realistic() ? cache.field || null : null; },
+      async silhouette() {
+        // Line art already has the subject's outline; the other modes find it on demand
+        const own = lineState.lines?.features?.silhouette;
+        if (own?.outlines?.length) return own;
+        if (!photo) return null;
+        const { frameCanvas, silhouetteOf } = await import('./lineart/lines.js');
+        // (a subject tapped in Line art is the subject here too)
+        const tap = subjectFrameTap();
+        return silhouetteOf(frameCanvas(photo.canvas, { ...doc.crop }, 512), tap ? { tap } : {});
+      },
+    });
+  }
+  finishDemo(); setPlaying(false);
+  print3d.open();
+}
+$('btnPrint3d').addEventListener('click', openPrint3d);
+
 // ------------------------------------------------------------------------------------ keyboard
 const typing = t => t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName) && !['range', 'checkbox', 'radio', 'button'].includes(t.type));
 const onBody = t => !t || t === document.body || t === sheet || t.closest?.('.stage') && !t.closest('button, input');
@@ -2374,6 +2563,7 @@ window.addEventListener('keydown', e => {
   if (mod && (k === 's' || k === 'S')) { e.preventDefault(); openDownload(true); return; }
   if (mod || e.altKey || typing(e.target)) return;
   if (picking.active && k === 'Escape') { e.preventDefault(); setPicking(false); return; }
+  if (subjectPick.active && k === 'Escape') { e.preventDefault(); setSubjectPick(false); return; }
   if (framing.active) {
     if (k === 'Enter') { e.preventDefault(); exitFraming(true); }
     else if (k === 'Escape') { e.preventDefault(); exitFraming(false); }
@@ -2396,6 +2586,7 @@ window.addEventListener('keydown', e => {
   if (k === '\\') { e.preventDefault(); if (!e.repeat) setCompare(true); return; }
   if (k === 'f' || k === 'F') { e.preventDefault(); enterFraming(); return; }
   if (k === 'r' || k === 'R') { e.preventDefault(); openFilm(); return; }
+  if (k === 'p' || k === 'P') { e.preventDefault(); openPrint3d(); return; }
   if (k === '?') { e.preventDefault(); $('keysDialog').showModal(); return; }
   // loupe: + / - zoom around the middle of the view, 0 fits the whole sheet
   if ((k === '+' || k === '=') && photo) { e.preventDefault(); loupe.zoomBy(2); return; }
@@ -2472,7 +2663,7 @@ async function boot() {
       try {
         const img = await decodeImage(session.blob, session.name);
         hideWelcome();
-        await setPhoto(img, { crop: session.crop });
+        await setPhoto(img, { crop: session.crop, subject: session.subject });
       } catch (e) { toast(imageErrorMessage(e), { error: true }); }
     }, { once: true });
   }
@@ -2498,12 +2689,14 @@ window.SP = {
   get doc() { return doc; }, get prefs() { return prefs; }, get geom() { return geom; }, get photo() { return photo; },
   get toneStats() { return cache.tone?.stats; },
   play, renderer, loupe, change, applyLook, setBrush, setPaper, openSample, enterFraming, exitFraming,
-  setMode, setRealStyle, setRealTool, realBuilder, setLineStyle, setLineTool, lineState, get building() {
+  setMode, setRealStyle, setRealTool, realBuilder, setLineStyle, setLineTool, lineState, setSubjectPick, subjectFrameTap,
+  get lineSubject() { const s = lineState.lines?.features?.silhouette; return { tap: doc.subject, frameTap: subjectFrameTap(), label: $('subjectWhat')?.textContent || '', kind: s?.kind ?? null, subject: s?.subject ?? null, tapped: !!s?.tapped, tapOutcome: lineState.lines?.tapOutcome ?? null, hint: $('subjectSub')?.textContent || '' }; },
+  get building() {
     return $('sheet').classList.contains('building') || realBuilder.busy
       || (realistic() && !!photo && (realState.dirty || (realState.want !== realState.key && realState.want !== realState.failed)))
       || (lineart() && !!photo && lineBusy());
   },
-  openFilm, openDownload, invalidate, renderState, history,
+  openFilm, openDownload, invalidate, renderState, history, openPrint3d, get print3d() { return print3d; },
   async shot(name = 'app') {
     const data = art.toDataURL('image/png');
     return (await fetch('/__shot', { method: 'POST', body: JSON.stringify({ name, data }) })).json();

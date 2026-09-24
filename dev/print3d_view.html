@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print Viewer Lab</title>
+<style>
+  :root { --bg: #16161a; --fg: #e9e6e0; --muted: #8d8a84; --line: #2c2c33; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, sans-serif; }
+  header { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  header b { font-weight: 600; margin-right: 8px; }
+  select, button { background: #222228; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; }
+  #stage { width: min(100vw, 1100px); aspect-ratio: 4 / 3; display: block; margin: 12px auto; cursor: grab; }
+  #info { color: var(--muted); padding: 0 16px 16px; white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; }
+</style>
+<header>
+  <b>Print viewer lab</b>
+  <label>scene <select id="scene"></select></label>
+  <label>bed <select id="bed"><option>pei</option><option>desk</option><option>dark</option><option value="none">none</option></select></label>
+  <label>material <select id="mat"><option>petg</option><option>pla</option><option>silk</option></select></label>
+  <label><input type="checkbox" id="backlit"> backlit</label>
+  <label><input type="checkbox" id="spin"> turntable</label>
+  <button id="snap">capture 1600 x 1200</button>
+</header>
+<canvas id="stage"></canvas>
+<div id="info"></div>
+<script type="module" src="print3d_view.js"></script>

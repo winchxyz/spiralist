@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print timelapse lab</title>
+<link rel="stylesheet" href="../css/app.css">
+<style>
+  body { margin: 0; background: #e9e7e2; color: #1d1d21; font: 14px/1.4 system-ui, sans-serif; }
+  #status { padding: 10px 16px; color: #6b6a66; }
+  #bar { padding: 0 16px 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+  #still { display: block; max-width: min(100%, 900px); height: auto; margin: 0 16px 24px; }
+</style>
+</head>
+<body>
+<div id="status">loading...</div>
+<div id="bar">
+  <button id="open" type="button">Open timelapse dialog</button>
+</div>
+<canvas id="still" width="8" height="8"></canvas>
+<script type="module" src="print3d_film.js"></script>
+</body>
+</html>

@@ -28,7 +28,7 @@
 </p>
 
 Everything runs in your browser. Your photo is never uploaded, and after the first visit the site
-works offline. Line art needs one extra download the first time you use it (about 45 MB), and then
+works offline. Line art needs one extra download the first time you use it (about 54 MB), and then
 it works offline too.
 
 ## What it does
@@ -50,6 +50,9 @@ it works offline too.
 - **Cinematic films.** A macro of the nib touching the paper, a slow pull back, and the finished
   sheet on one of eight desks. Sign it with your name, then share it or post it on X.
 - **Exports.** PNG up to 8K, SVG in real millimetres for pen plotters, or straight to the clipboard.
+- **3D print your line.** Turn the drawing into a relief plaque, a wire sculpture, a lithophane or
+  a cookie cutter with a stamp, pick the filament colours, save a 3MF or STL for your printer, and
+  watch a timelapse of your printer building it.
 
 ## Line art
 
@@ -84,8 +87,36 @@ The names describe a kind of line, not copies of anyone's drawings.
 - **How it reads the photo.** A small neural network trained to make line drawings finds the lines
   worth drawing, and a face finder locates the eyes, nose and mouth so a portrait gets them.
   It reads shapes, not tones, so frame the face or subject to fill the square. Faces, animals and
-  objects work best; landscapes come out as loose bands of line. A photo with no clear contours
-  gets a note saying so, not a made-up drawing.
+  objects work best; a landscape comes out as a skyline, a tree line and a few marks. A photo with
+  no clear contours gets a note saying so, not a made-up drawing.
+- **Silhouette first.** Not every photo reads well as a few contours: the eye first needs the
+  subject's shape. So two small segmentation models (about 9 MB of the first-use download) find
+  the subject's outer shape, and that shape becomes the main line, the way a one-line artist
+  starts; the features go inside it. The panel says what was found ("Subject: cat", "Scene:
+  landscape").
+
+<p align="center">
+  <img src="docs/silhouettes.jpg" alt="Six test photos, a red-haired woman, a runner, a ginger cat, a horse, a cappuccino and a small car, each with its Line art drawing in style B before and after. Before, the line is a loose set of edges; after, it follows the subject's outer shape first: a head, a body, a sitting cat, a horse, a cup, a car." width="100%">
+  <br>
+  <sub>Style B on six photos from the test set. Before: edges only. After: the silhouette first.<br>
+  Photos: CC0 from Wikimedia Commons, by
+  <a href="https://commons.wikimedia.org/wiki/File:Woman_With_Red_Hair.jpg">George Hodan</a>,
+  <a href="https://commons.wikimedia.org/wiki/File:Runner_437_Jonas_J%C3%B6nsson_Paddlarklubben_Delfin_in_Musselloppet_2019.jpg">W.carter</a>,
+  <a href="https://commons.wikimedia.org/wiki/File:Red_tabby_sitting_on_a_cat_house.jpg">Roc0ast3r</a>,
+  <a href="https://commons.wikimedia.org/wiki/File:Beautiful_Brown_Horse_(198516275).jpeg">Halyna Feshchak</a>,
+  <a href="https://commons.wikimedia.org/wiki/File:Cup_of_coffee_in_Caf%C3%A9_Butter_-_Prenzlauer_Berg,_Berlin.jpg">Edward</a> and
+  <a href="https://commons.wikimedia.org/wiki/File:Avenue_Roosevelt_%C3%A0_Bruxelles,_Zen_Car_en_recharge.jpg">Benoît Prieur</a>.</sub>
+</p>
+
+- **Tap the subject.** If the finder picked the wrong thing (the house, not the lighthouse), press
+  **Tap the subject** and tap it on the sheet: the photo shows faintly under a dashed outline, and
+  the new outline follows what is under your tap. The tap is kept with the photo, undo takes it
+  back, and **Automatic** returns to the finder's choice. When a face fills the whole frame there
+  is no outline to find, and the panel says so; frame the photo a little wider.
+- **What it still finds hard.** Forests get a tree line with a few small spruces, thin objects
+  such as a bicycle are drawn from their structure (the wheels as circles), and a pale dog keeps
+  its dark eyes and nose. Still weak: long hair over the shoulders can read as a hood, and a very
+  thin object is often better tapped.
 - **Tools at their real widths.** Fineliner, ballpoint, fountain nib, soft pencil, sumi brush,
   marker and charcoal pencil on a 21 × 21 cm sheet, with your choice of paper and light. Sliders
   for detail, hatching and wobble.
@@ -95,8 +126,9 @@ The names describe a kind of line, not copies of anyone's drawings.
   real speed.
 - **Exports.** A PNG of the sheet, and an SVG with one path at the tool's real width. For the nib,
   the pencils and the brush, "Filled outline" keeps the swell of the line.
-- **First use.** The line model, the face finder and the runtime that runs them are downloaded once,
-  the first time you open Line art: about 45 MB (57 MB in browsers that run it on WebGPU). The
+- **First use.** The line model, the face finder, the silhouette models and the runtime that runs
+  them are downloaded once, the first time you open Line art: about 54 MB (66 MB in browsers that
+  run it on WebGPU). The
   service worker keeps them, so Line art works offline after that. Reading a photo takes about 10
   to 30 seconds. It all runs in your browser, so the photo still never leaves your device. If the
   model can't load, a simpler edge finder reads the photo instead, the app tells you the lines
@@ -203,6 +235,120 @@ and the app tells you how long that would take.
 
 Full-quality MP4s of the films above are on the [Releases page](https://github.com/winchxyz/spiralist/releases).
 
+## 3D print your line
+
+**3D print** (next to Download, in the menu on a phone, or press **P**) turns the drawing into a
+file for a 3D printer. You pick one of four products, and the app offers a product only where it
+prints well for that drawing. Where it doesn't, the card says why and suggests one that does.
+
+<p align="center">
+  <img src="docs/print3d.jpg" alt="The four 3D print products, rendered in the app on a desk. A: a relief plaque, a black one-line portrait raised on a white plate with a black frame, and two white slotted feet. B: the same line as a black wire sculpture standing in a small black stand. C: a lithophane of a spiral portrait lit from behind, the face showing in shades of grey through a white panel. D: an orange cookie cutter in the outline of the head, next to a white stamp with the drawing raised on it and its handle." width="100%">
+  <br>
+  <sub>Renders from the app's own 3D preview. A, B and D are the Line art plaster bust; C is an Artistic spiral with a light behind it.</sub>
+</p>
+
+- **A Relief plaque.** The line raised 1.2 mm on a 2.4 mm plate (plate Z 0-2.4, line Z 2.4-3.6 mm),
+  in two colours, with a frame and slotted feet or hanging holes. 80 to 300 mm on its longest
+  side.
+- **B Wire sculpture.** The one line itself, printed flat as a single piece, with a hanging loop or
+  a slotted stand. The wire is 1.6 mm wide and 2.4 mm tall, and grows to 2.4 × 3.0 mm at 300 mm so
+  a big one doesn't sag.
+- **C Lithophane.** A panel 0.8 to 3.2 mm thick that follows the drawing's darkness. It looks plain
+  white until a light is behind it. It prints standing on its foot (or flat), 60 to 200 mm tall.
+- **D Cookie cutter + stamp.** A cutter in the outline of the photo's subject, 12 mm tall with a
+  2.4 mm wall, plus a stamp that presses the lines into the dough and a push-fit handle. Thin
+  parts such as ears must come through the wall's rounding; when they would not, the report asks
+  for a bigger size.
+
+### What prints well for which drawing
+
+| Drawing | A Plaque | B Wire | C Lithophane | D Cutter + stamp |
+|---|---|---|---|---|
+| Line art, and the Contour path | yes, the best pick | yes | yes | yes, with a clear subject |
+| Artistic Spiral, Wander, Maze | yes: a spiral is rebuilt with fewer, wider rings; Wander and Maze print as a textured relief | no: the line fuses into a disc | yes, the best pick | yes, stamp off by default |
+| Realistic | no: the lines fuse solid | no | yes, the best pick | yes, stamp off by default |
+
+The cookie cutter needs one clear subject. A landscape, or a shape the finder is unsure of (a
+bicycle), gets a reason instead; tap the subject in Line art to give it one. Outside Line art the
+cutter uses the same silhouette models, so picking it the first time downloads them. With the stamp
+off, a dense drawing would only press a flat block.
+
+### Colours you can see
+
+You pick the filament colour of each part from the Bambu PLA Basic or PETG Basic swatches, or any
+custom colour:
+
+- **Plaque:** Base (the background) and Line (the ink).
+- **Wire:** the wire.
+- **Cookie cutter:** the cutter and the stamp.
+- **Lithophane:** one colour only, and the dialog says why: its picture comes from light shining
+  through the plastic, so a second colour would only get in the way. White works best.
+
+The preview's backdrop is Auto, Textured PEI plate, Light wood desk, Studio white or Graphite;
+Auto picks one that stands out from the print. The defaults always contrast: a white plate with a
+black line, a black wire on the PEI plate, an orange cutter and stamp. When you pick two colours
+that are hard to tell apart (a black line on a black plate, yellow on white, a dark wire on the
+Graphite backdrop), the dialog warns you and offers a one-tap fix, such as "Use a white line" or a
+lighter plate. The 3MF and the timelapse use the colours you chose.
+
+### Watch it print
+
+<p align="center">
+  <img src="docs/print-timelapse.gif" width="440" alt="A print timelapse of the Line art relief plaque on a Bambu Lab A2L: the nozzle starts on the gold textured plate, the white plate fills in layer by layer with its infill showing, then the filament changes and the black line and frame rise on top, while a counter reads the layer, Z and the time, ending at layer 50 of 50, Z 10 mm, 1 h 29 min.">
+  <br>
+  <sub>1 h 29 min of printing in 10 s on the A2L. Here one filament is swapped after Z 2.4 mm, so<br>
+  the feet printed alongside turn black too; with two AMS filaments they print white on their own plate.</sub>
+</p>
+
+**Watch it print** plays a timelapse of your printer building the piece, like a camera in the
+printer. The piece is sliced into 0.2 mm layers with walls and infill, and you watch the nozzle lay
+each bead in your filament colours. On a bed slinger such as the A2L the bed slides back and forth;
+on a CoreXY printer it drops a layer at a time. A colour change pauses at its layer with a banner,
+and a counter shows the layer, Z and the time so far against the estimated total. The camera is a
+slow orbit or a fixed printer cam.
+
+Save it as an MP4 in 9:16, 1:1 or 16:9, 10, 15 or 30 seconds, at 30 or 60 fps, then Download it or
+**Post on X**. You can also drop in a file you sliced yourself (G-code from Bambu Studio,
+OrcaSlicer or PrusaSlicer, or a `.gcode.3mf`), and the timelapse replays that instead, on the
+slicer's own clock. When the piece doesn't fit the printer, the button is off and says why.
+
+### Files: 3MF and STL
+
+- **3MF** for Bambu Studio and OrcaSlicer. Each part is its own object in its colour and filament
+  slot, and carries its print settings: 100% infill and a 5 mm brim for the lithophane, 3 walls
+  and 20% infill for the cutter. Parts that shouldn't share a plate go on a second one.
+- **STL** saves one file per part, zipped when there are several.
+- **Two colours.** With an AMS, the plaque's line is filament 2 and the plate is filament 1; check
+  in your slicer that the Line part shows filament 2. With one filament, choose **Swap after
+  Z 2.4 mm**: the file asks for a pause there, and everything printed above it comes out in the
+  new colour. A cutter and stamp in one colour print together with no swaps; in two colours the
+  stamp goes on its own plate.
+- **Sizes** are shown per part with their axis ranges, for example Plate X 0-110.8, Y 0-150,
+  Z 0-2.4 mm, and the report lists what was changed so the drawing prints (lines thickened to
+  0.8 mm, gaps merged, a spiral rebuilt) and what to know before printing.
+- **Grams and time** are estimates. For the A2L they came within about 5% of Bambu Studio's own
+  slices on the test pieces; your slicer has the final word.
+
+### Printers
+
+The A2L is the default. The app warns you when a part doesn't fit the bed, and the timelapse moves
+the way that printer does.
+
+| Printer | Bed | Moves by | Two colours by |
+|---|---|---|---|
+| Bambu Lab A1 mini | X 0-180, Y 0-180, Z 0-180 mm | bed slinger | AMS |
+| Bambu Lab A1 | X 0-256, Y 0-256, Z 0-256 mm | bed slinger | AMS |
+| Bambu Lab A2L | X 0-330, Y 0-320, Z 0-325 mm | bed slinger | AMS |
+| Bambu Lab P1S | X 0-256, Y 0-256, Z 0-256 mm | CoreXY | AMS |
+| Bambu Lab X1C | X 0-256, Y 0-256, Z 0-256 mm | CoreXY | AMS |
+| Prusa MK4 | X 0-250, Y 0-210, Z 0-220 mm | bed slinger | filament swap |
+| Prusa MINI+ | X 0-180, Y 0-180, Z 0-180 mm | bed slinger | filament swap |
+| Creality Ender-3 | X 0-220, Y 0-220, Z 0-250 mm | bed slinger | filament swap |
+| Generic 220 × 220 | X 0-220, Y 0-220, Z 0-250 mm | bed slinger | filament swap |
+
+All with a 0.4 mm nozzle, in PETG Basic or PLA Basic. On a bed slinger the lithophane is turned so
+its thin side runs along X, not along the moving bed.
+
 ## How it works
 
 1. **Photo to tone.** The photo is turned into a map of light and dark, with automatic levels
@@ -284,6 +430,7 @@ or Firefox). Films use WebCodecs where the browser has it and fall back to Media
 | `js/film.js`, `js/scene.js`, `js/desks.js`, `js/signature.js`, `js/encoder.js` | film timeline, camera and desks, signature, video encoding |
 | `js/export.js`, `js/download.js`, `js/share.js` | PNG and SVG export, sharing to X |
 | `js/materials.js` | looks, and the Realistic and Line art tools at their real sizes |
+| `js/print3d/` | 3D printing: the dialog (`dialog.js`), printers, filaments and colour checks (`presets.js`), the products and their meshes (`products.js`, `pkit.js`, `mesh.js`, `worker.js`), the 3D preview (`view.js`), and the print timelapse: slicing, film and G-code replay (`toolpath.js`, `toolpath.worker.js`, `printfilm.js`, `gcode.js`) |
 | `vendor/` | the MP4 muxer, and the Line art model, face finder and runtime (sources, sizes and licences in [`vendor/LICENSES.md`](vendor/LICENSES.md)) |
 | `js/app.js` | the app itself |
 | `js/tools.js`, `js/samples.js` | pen sprites and the built-in sample photos |
@@ -298,11 +445,18 @@ node tests/papers.test.mjs
 node tests/scene.test.mjs
 node tests/export.test.mjs
 node tests/real.test.mjs
+node tests/print3d.test.mjs
+node tests/print3d_presets.test.mjs
+node tests/print3d_film.test.mjs
 ```
 
 The browser tests (`tests/intake.e2e.mjs`, `tests/film.e2e.mjs`, `tests/film.dialog.e2e.mjs`,
-`tests/film.lineart.mjs`, `tests/real.e2e.mjs`, `tests/loupe.e2e.mjs`, `tests/app-shot.mjs`) drive
-the running dev server with Playwright. The visual labs live in `dev/`, including the Line art
+`tests/film.lineart.mjs`, `tests/real.e2e.mjs`, `tests/loupe.e2e.mjs`, `tests/app-shot.mjs`,
+`tests/lineart.subject.e2e.mjs`, `tests/print3d_dialog.mjs`, `tests/print3d_film.e2e.mjs`) drive
+the running dev server with Playwright. `tests/print3d_slice.mjs` and `tests/print3d_plates.mjs`
+slice exported 3MFs with the Bambu Studio command line. `tests/print3d_offline.e2e.mjs` starts its own server on
+127.0.0.1 (the only local host where the service worker registers), stops it, and checks that the
+print timelapse still opens offline. The visual labs live in `dev/`, including the Line art
 line-up (`dev/lineart_lineup.html`).
 
 ## Credits
@@ -317,6 +471,8 @@ Line art stands on other people's work:
   conversion is by Joseph Rocca ([image-to-line-art-js](https://github.com/josephrocca/image-to-line-art-js), MIT).
 - **MediaPipe Face Landmarker** by Google
   ([docs](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker), Apache-2.0).
+- **DeepLab-v3** and **MagicTouch** (MediaPipe image and interactive segmenters) by Google, for the
+  silhouettes ([docs](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter), Apache-2.0).
 - **ONNX Runtime Web** by Microsoft ([onnxruntime](https://github.com/microsoft/onnxruntime), MIT).
 
 The Realistic styles follow pen-plotter and computational drawing traditions: Tyler Foust's

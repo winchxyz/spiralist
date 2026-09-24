@@ -2,11 +2,12 @@
 // needed one). Network-first for everything this site serves, so an update is picked up on the
 // next load and modules from two different releases are never mixed; the cache is the fallback.
 // Google Fonts are cached on first use.
-// Line art's models and runtimes (vendor/ort, vendor/mediapipe, vendor/models: ~45-57 MB) are
+// Line art's models and runtimes (vendor/ort, vendor/mediapipe, vendor/models: ~54-66 MB with the
+// silhouette's deeplab_v3 and magic_touch models) are
 // never precached: a visitor who never opens Line art never downloads them. The first Line art use
 // fetches them once; they go into their own cache, served cache-first (a file there never changes
 // without a new name) and kept across releases, so an update does not download them again.
-const CACHE = 'spiralist-2026-09-23f';
+const CACHE = 'spiralist-2026-09-24c';
 const MODELS = 'spiralist-models-v1';
 const isModelFile = url => /\/vendor\/(ort|mediapipe|models)\//.test(url.pathname);
 // every module the app imports (statically or on demand) and the film's desk photos, so the whole
@@ -21,7 +22,10 @@ const SHELL = [
   './js/loupe.js', './js/real/index.js', './js/real/builder.js', './js/real/worker.js', './js/real/squiggle.js',
   './js/real/stipple.js', './js/real/scribble.js', './js/real/engrave.js',
   './js/lineart/index.js', './js/lineart/styles.js', './js/lineart/lines.js', './js/lineart/path.js',
-  './js/lineart/strokes.js', './js/lineart/worker.js', './js/lineart/buildworker.js',
+  './js/lineart/strokes.js', './js/lineart/worker.js', './js/lineart/buildworker.js', './js/lineart/silhouette.js',
+  './js/print3d/dialog.js', './js/print3d/presets.js', './js/print3d/worker.js', './js/print3d/products.js',
+  './js/print3d/pkit.js', './js/print3d/mesh.js', './js/print3d/view.js', './vendor/earcut.mjs',
+  './js/print3d/printfilm.js', './js/print3d/toolpath.js', './js/print3d/gcode.js', './js/print3d/toolpath.worker.js',
   ...DESK_IDS.map(id => `./img/desks/${id}.jpg`),
 ];
 

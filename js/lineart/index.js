@@ -4,22 +4,85 @@
 //   const eng = new LineArtEngine();
 //   await eng.prepare(p => ...);                                   // optional: download + warm up
 //   const lines = await eng.lines(bitmap, crop, { detail }, p => ...);   // cached per photo+crop+detail
+//   // silhouette first: { detail, silhouette: true } finds the subject's outer shape too, and
+//   // { silhouette: { tap: [x, y] } } (frame fractions) takes the thing under the user's tap;
+//   // describeSilhouette(lines.features.silhouette).label says what it found ("Subject: cat")
 //   const geom = await eng.build('matisse', lines, { sheetMm, tool, toolMm, wobble, hatch, seed });
 //
 // geom is the app's geometry (STRIDE 7) with geom.path = 'lineart', geom.handT (hand seconds per
 // point, also every pacing table) and geom.lineart = { style, lengthM, handSeconds, retracedM,
 // bridgesM, engine, timings, ... }. Render with renderer.setLayout({ cx: .5, cy: .5, r: LAYOUT_R }).
-import { extractLines, detectFace, warmLines, probeLines } from './lines.js';
+import { extractLines, detectFace, warmLines, probeLines, frameCanvas, silhouetteOf } from './lines.js';
 import { LINE_STYLES, lineStyleById, buildStyled } from './styles.js';
-import { LAYOUT_R, PRESSURE_TOOLS } from './path.js';
+import { LAYOUT_R, PRESSURE_TOOLS, silhouetteScore, standinSilhouette, isScene } from './path.js';
 
-export { LINE_STYLES, lineStyleById, LAYOUT_R, PRESSURE_TOOLS };
+export { LINE_STYLES, lineStyleById, LAYOUT_R, PRESSURE_TOOLS, silhouetteScore, standinSilhouette, isScene };
+
+// the names deeplab gives its classes, as the app says them ("Subject: cat")
+const SUBJECT_NAME = { aeroplane: 'plane', diningtable: 'table', pottedplant: 'plant', tv: 'screen', motorbike: 'motorbike' };
+/** What the silhouette found, for the app: { label: 'Subject: cat' | 'Scene: landscape' | ...,
+ *  scene, tapped, weak }. weak: the finder was unsure (a tap usually helps). */
+export function describeSilhouette(sil) {
+  if (!sil) return { label: 'Subject: not found', scene: false, tapped: false, weak: true };
+  const tapped = !!sil.tapped, scene = !tapped && isScene(sil);
+  // (a class is named only when the finder is quite sure: a lighthouse's house can read as a train)
+  const name = sil.subject && (sil.confidence ?? 0) >= 0.8 ? SUBJECT_NAME[sil.subject] || sil.subject : null;
+  let label;
+  // (a scene never names its landmark: deeplab reads a lighthouse's house as a train)
+  if (scene) label = sil.kind === 'landscape' ? 'Scene: landscape' : 'Scene: skyline and a landmark';
+  else if (sil.kind === 'portrait') label = 'Subject: portrait';
+  else if (sil.kind === 'person') label = 'Subject: person';
+  // (a tap names no class: the class under a saucer is the table)
+  else if (tapped && (sil.outlines || []).length) label = 'Subject: what you tapped';
+  else if (name) label = `Subject: ${name}`;
+  else if (sil.kind === 'animal') label = 'Subject: an animal';
+  else if (sil.kind === 'object') label = 'Subject: an object';
+  else label = 'Subject: not found';
+  // (a scene is sure enough: its colour-flood skyline always reports a low confidence)
+  return { label, scene, tapped, weak: !tapped && !scene && (!(sil.outlines && sil.outlines.length) || (sil.confidence ?? 1) < 0.5) };
+}
+
+const maskShare = m => { if (!m?.data) return 0; let s = 0; for (let i = 0; i < m.data.length; i++) s += m.data[i] > 127; return s / m.data.length; };
+/** What a tap did to the drawn outline: 'closeup' when the subject fills the frame (a close-up
+ *  face: the contour is its face and hair at the frame edge, whatever the tap; path.js
+ *  closeUpSilhouette), 'same' when the tap picked the shape the finder had found, else null. */
+export function tapOutcome(auto, tapped) {
+  if (!auto || !tapped) return null;
+  if (tapped.parts?.face && maskShare(tapped.mask) > 0.8) return 'closeup';
+  const a = auto.mask?.data, b = tapped.mask?.data;
+  if (a && b && a.length === b.length) {
+    let both = 0, any = 0;
+    for (let k = 0; k < a.length; k++) { const p = a[k] > 127, q = b[k] > 127; both += p && q; any += p || q; }
+    if (any && both / any > 0.92) return 'same';
+  }
+  return null;
+}
+
+// deeplab classes whose outline is a thin frame (spokes, chair rails): a filled blob as a shape
+const THIN_CLASSES = ['bicycle', 'chair', 'motorbike'];
+/** Whether the silhouette makes a cookie cutter worth printing (js/print3d): only a subject the
+ *  finder was sure of, or one the user tapped. -> { ok, reason, fix: 'tap' | null, label }
+ *  (fix 'tap': choosing the subject in Line art helps). The cutter itself then checks that the
+ *  subject's thin parts, such as ears, survive the wall's rounding at the chosen size. */
+export function cutterVerdict(sil) {
+  const d = describeSilhouette(sil), top = sil?.classes?.[0]?.name;
+  if (sil && d.scene) return { ok: false, fix: null, label: d.label, reason: 'A landscape has no single subject to cut round: the cutter would be a strip of skyline.' };
+  if (!sil || !(sil.outlines || []).length) return { ok: false, fix: 'tap', label: d.label, reason: 'No subject was found in the photo, so there is no outline to cut round.' };
+  if (sil.standin) return { ok: false, fix: 'tap', label: d.label, reason: 'The subject was not found; the drawing\'s outer edge would make a shapeless cutter.' };
+  if (d.tapped) return { ok: true, fix: null, label: d.label, reason: '' };
+  if (d.weak) return { ok: false, fix: 'tap', label: d.label, reason: 'The subject\'s outline is unclear, so the cutter would be a blob. Tap the subject in Line art first.' };
+  if (sil.kind === 'object' && THIN_CLASSES.includes(top) && (sil.confidence ?? 0) < 0.8) return { ok: false, fix: 'tap', label: d.label, reason: `A ${top}'s shape is its thin frame; filled in as a cutter it reads as a blob.` };
+  return { ok: true, fix: null, label: d.label, reason: '' };
+}
 
 const V = new URL('../../vendor/', import.meta.url).href;
 const SHARED_ASSETS = [
   { url: V + 'models/informative_drawings.onnx', bytes: 17193338 },
   { url: V + 'mediapipe/wasm/vision_wasm_internal.wasm', bytes: 11756954 },
+  // the subject's silhouette (js/lineart/silhouette.js): what it is, and its crisp outer shape
+  { url: V + 'models/magic_touch.tflite', bytes: 6227884 },
   { url: V + 'models/face_landmarker.task', bytes: 3758596 },
+  { url: V + 'models/deeplab_v3.tflite', bytes: 2780176 },
   { url: V + 'mediapipe/wasm/vision_wasm_internal.js', bytes: 323377 },
   { url: V + 'mediapipe/vision_bundle.mjs', bytes: 155439 },
 ];
@@ -133,8 +196,13 @@ export class LineArtEngine {
 
   /** The drawable lines of this photo + crop at this detail: { strokes, features, engine, timings, stats }.
    *  Cached; the same photo and crop at another detail reuses the model's line map (vectoriser only). */
-  lines(source, crop, { detail = 0.5, engine = 'auto', ink = null } = {}, onProgress = () => {}) {
-    const key = srcId(source) + '|' + cropKey(crop) + '|' + (+detail).toFixed(3) + '|' + engine;
+  lines(source, crop, { detail = 0.5, engine = 'auto', ink = null, silhouette = false } = {}, onProgress = () => {}) {
+    // (silhouette: also find the subject's outer shape, features.silhouette; see silhouette.js.
+    //  { tap: [x, y] } in frame fractions: the subject is the thing under the tap)
+    const tap = silhouette && typeof silhouette === 'object' && Array.isArray(silhouette.tap) && silhouette.tap.length === 2
+      && silhouette.tap.every(v => Number.isFinite(+v)) ? silhouette.tap.map(v => Math.min(1, Math.max(0, +v))) : null;
+    if (tap) return this._tapped(source, crop, { detail, engine, ink }, tap, onProgress);
+    const key = srcId(source) + '|' + cropKey(crop) + '|' + (+detail).toFixed(3) + '|' + engine + (silhouette ? '|sil' : '');
     let hit = this.cache.get(key);
     // lines the edge finder drew because the model failed are not kept for good: once the
     // worker may try the model again (20 s later, or when the network is back), read again
@@ -146,7 +214,7 @@ export class LineArtEngine {
     const p = (async () => {
       onProgress({ stage: 'model', loaded: 0, total: 1 });
       const t0 = performance.now();
-      const r = await extractLines(source, crop, { detail, engine, ink, debugInk: !ink && !!this.keepInk });
+      const r = await extractLines(source, crop, { detail, engine, ink, debugInk: !ink && !!this.keepInk, ...(silhouette ? { silhouette: true } : {}) });
       onProgress({ stage: 'ready', loaded: 1, total: 1 });
       r.timings = { ...r.timings, wall: Math.round(performance.now() - t0) };
       r.key = key;
@@ -154,6 +222,35 @@ export class LineArtEngine {
     })();
     this.cache.set(key, p);
     p.then(r => { if (r && r.engine === 'xdog' && engine === 'auto') p.xdogAt = Date.now(); }, () => this.cache.delete(key));
+    while (this.cache.size > this.cacheSize) this.cache.delete(this.cache.keys().next().value);
+    return p;
+  }
+
+  /** The lines with the silhouette of the thing under a tap: the photo's lines (cached, no new
+   *  model run) plus one silhouette run with the tap (MagicTouch, well under a second). */
+  _tapped(source, crop, o, tap, onProgress) {
+    const key = srcId(source) + '|' + cropKey(crop) + '|' + (+o.detail).toFixed(3) + '|' + o.engine + '|tap:' + tap.map(v => v.toFixed(3)).join(',');
+    const hit = this.cache.get(key);
+    if (hit) {
+      this.cache.delete(key); this.cache.set(key, hit);
+      return hit.then(r => { onProgress({ stage: 'ready', loaded: 1, total: 1 }); return { ...r, cached: true }; });
+    }
+    const p = (async () => {
+      const base = await this.lines(source, crop, { ...o, silhouette: true }, onProgress);
+      const t0 = performance.now();
+      let sil = null, err = null;
+      try {
+        const canvas = frameCanvas(source, crop, base.N || 512);
+        sil = await silhouetteOf(canvas, { tap, landmarks: base.features?.face?.landmarks || null });
+      } catch (e) { err = String(e && e.message || e); console.warn('lineart: tapped silhouette failed:', err.split(/\r?\n/)[0]); }
+      onProgress({ stage: 'ready', loaded: 1, total: 1 });
+      return { ...base, cached: false, key, tap, tapOutcome: tapOutcome(base.features?.silhouette, sil),
+        features: { ...base.features, silhouette: sil || base.features.silhouette },
+        silhouetteError: err || base.silhouetteError || null,
+        timings: { ...base.timings, tap: Math.round(performance.now() - t0) } };
+    })();
+    this.cache.set(key, p);
+    p.catch(() => this.cache.delete(key));
     while (this.cache.size > this.cacheSize) this.cache.delete(this.cache.keys().next().value);
     return p;
   }

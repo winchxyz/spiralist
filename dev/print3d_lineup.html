@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print line-up</title>
+<style>
+  :root { --bg: #e9e7e2; --ink: #1d1d21; --muted: #6b6a66; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  #status { padding: 10px 16px; color: var(--muted); }
+  #sheet { display: block; max-width: 100%; height: auto; margin: 0 auto 24px; }
+</style>
+</head>
+<body>
+<div id="status">building...</div>
+<canvas id="sheet" width="8" height="8"></canvas>
+<script type="module" src="print3d_lineup.js"></script>
+</body>
+</html>

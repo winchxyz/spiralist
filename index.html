@@ -22,6 +22,7 @@
   <symbol id="i-undo" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></g></symbol>
   <symbol id="i-redo" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></g></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></g></symbol>
+  <symbol id="i-print3d" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2 19.5 7.4v8.4L12 20 4.5 15.8V7.4Z"/><path d="M4.5 7.4 12 11.6l7.5-4.2M12 11.6V20"/></g></symbol>
   <symbol id="i-film" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="m16 10.5 5-3v9l-5-3"/></g></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10.2-6.5a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5Z" fill="currentColor"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><g fill="currentColor"><rect x="6.5" y="5" width="4" height="14" rx="1.2"/><rect x="13.5" y="5" width="4" height="14" rx="1.2"/></g></symbol>
@@ -73,6 +74,9 @@
     <button class="btn secondary hide-sm" id="btnDownload" type="button" title="Download image (Ctrl+S)" aria-haspopup="dialog">
       <svg class="ic" aria-hidden="true"><use href="#i-download"/></svg><span>Download</span>
     </button>
+    <button class="btn secondary hide-sm" id="btnPrint3d" type="button" title="3D print it (P)" aria-haspopup="dialog">
+      <svg class="ic" aria-hidden="true"><use href="#i-print3d"/></svg><span class="p3-label">3D print</span>
+    </button>
     <button class="btn primary hide-sm" id="btnFilm" type="button" title="Film a timelapse (R)" aria-haspopup="dialog">
       <svg class="ic" aria-hidden="true"><use href="#i-film"/></svg><span class="film-label">Film timelapse</span>
     </button>
@@ -89,6 +93,7 @@
             <button role="radio" type="button" data-v="dark">Dark</button>
           </div>
         </div>
+        <button role="menuitem" type="button" data-act="print3d"><svg class="ic"><use href="#i-print3d"/></svg>3D print it<kbd>P</kbd></button>
         <button role="menuitem" type="button" data-act="shortcuts"><svg class="ic"><use href="#i-keyboard"/></svg>Keyboard shortcuts<kbd>?</kbd></button>
         <a role="menuitem" href="https://github.com/winchxyz/spiralist" target="_blank" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-star"/></svg>Star on GitHub</a>
         <a role="menuitem" href="https://x.com/winchxyz" target="_blank" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg>Made by @winchxyz</a>
@@ -119,7 +124,7 @@
         <!-- Line art, first use: the model download, then reading the photo (real progress) -->
         <div class="line-gate" id="lineGate" role="status" hidden>
           <div class="line-gate-title" id="lineGateTitle">Getting the line model ready</div>
-          <div class="line-gate-sub" id="lineGateSub">45 MB, once, then it works offline</div>
+          <div class="line-gate-sub" id="lineGateSub">54 MB, once, then it works offline</div>
           <div class="line-gate-bar" role="progressbar" aria-labelledby="lineGateTitle" aria-valuemin="0" aria-valuemax="100" id="lineGateBar"><i></i></div>
         </div>
         <!-- loupe: shown while zoomed; the scale bar is real paper (the sheet's true width) -->
@@ -202,6 +207,7 @@
 
     <div class="dropzone" id="dropzone" hidden><div>Drop to draw</div></div>
     <div class="pick-hint" id="pickHint" hidden role="status">Click where the maze should start · <kbd>Esc</kbd> to cancel</div>
+    <div class="pick-hint" id="subjectHint" hidden role="status">Tap the subject to outline<span class="hide-touch"> · <kbd>Esc</kbd> to cancel</span></div>
   </main>
 
   <!-- ─────────── Inspector ─────────── -->
@@ -239,6 +245,17 @@
         <p class="panel-sub">One-line drawings the way artists make them: contours, not tone, drawn feature by feature.</p>
         <p class="stat real-info" id="lineInfo" aria-live="polite"></p>
         <p class="hint-card warn line-note" id="lineNote" hidden></p>
+        <!-- silhouette first: what was found, and the user's tap to choose the subject -->
+        <div class="subject-row" id="subjectRow" hidden>
+          <div class="subject-text">
+            <div class="subject-what" id="subjectWhat" aria-live="polite">Subject: finding it…</div>
+            <div class="subject-sub" id="subjectSub"></div>
+          </div>
+          <div class="subject-actions">
+            <button class="btn secondary small" type="button" id="btnPickSubject" aria-pressed="false" title="Tap the subject on the sheet; its outline becomes the main line"><svg class="ic" aria-hidden="true"><use href="#i-target"/></svg><span>Tap the subject</span></button>
+            <button class="text-btn" type="button" id="btnSubjectAuto" hidden title="Find the subject automatically again">Automatic</button>
+          </div>
+        </div>
         <div class="styles" id="lineStyles" role="radiogroup" aria-label="Line art style"></div>
         <div class="sliders" id="lineArtSliders"></div>
       </section>
@@ -530,6 +547,61 @@
   </div>
 </dialog>
 
+<!-- ─────────── 3D print (js/print3d/dialog.js fills the cards, colours and options) ─────────── -->
+<dialog class="sheet-dialog p3" id="p3Dialog" aria-labelledby="p3Title" aria-describedby="p3Art">
+  <div class="dlg">
+    <header class="dlg-head"><div><h2 id="p3Title">3D print it</h2><p class="helper p3-art" id="p3Art"></p></div>
+      <button class="icon-btn" type="button" id="p3Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></header>
+    <div class="p3-body">
+      <div class="p3-stage">
+        <div class="p3-view">
+          <canvas id="p3Canvas" role="img" aria-label="3D preview of the print on the printer's bed. Drag to turn it, scroll or pinch to zoom, double-click to reset."></canvas>
+          <div class="p3-busy" id="p3Busy" hidden role="status"><span class="p3-spin" aria-hidden="true"></span><span id="p3BusyText">Building the print…</span></div>
+          <div class="p3-view-tools">
+            <button class="pill-btn" type="button" id="p3Spin" aria-pressed="true" title="Turn the print slowly">Turntable</button>
+            <button class="pill-btn" type="button" id="p3Backlit" aria-pressed="false" hidden title="Shine a light through the lithophane">Light behind</button>
+          </div>        </div>
+        <p class="stat p3-size" id="p3Size"></p>
+        <div class="p3-report" id="p3Report" aria-live="polite"></div>
+        <p class="stat" id="p3Estimate"></p>
+      </div>
+      <div class="p3-setup">
+        <div class="field-label" id="p3ProductLabel">Product</div>
+        <div class="p3-cards" id="p3Cards" role="radiogroup" aria-labelledby="p3ProductLabel"></div>
+        <p class="helper p3-card-note" id="p3CardNote"></p>
+        <div class="field-label"><label for="p3SizeR">Size (longest side)</label> <output id="p3SizeOut" for="p3SizeR"></output></div>
+        <input type="range" class="p3-range" id="p3SizeR">
+        <div id="p3Colors"></div>
+        <div id="p3ColorWarn" hidden></div>
+        <div class="field-label" id="p3BackdropLabel">Preview backdrop</div>
+        <div class="seg seg-sm" id="p3Backdrop" role="radiogroup" aria-labelledby="p3BackdropLabel">
+          <button role="radio" type="button" data-v="auto">Auto</button>
+          <button role="radio" type="button" data-v="pei">PEI plate</button>
+          <button role="radio" type="button" data-v="desk">Wood</button>
+          <button role="radio" type="button" data-v="studio">White</button>
+          <button role="radio" type="button" data-v="dark">Graphite</button>
+        </div>
+        <p class="helper" id="p3BackdropNote"></p>
+        <div class="field-label"><label for="p3Printer">Printer</label></div>
+        <select class="p3-select" id="p3Printer"></select>
+        <div class="seg seg-sm p3-material" id="p3Material" role="radiogroup" aria-label="Filament">
+          <button role="radio" type="button" data-v="petg">PETG Basic</button>
+          <button role="radio" type="button" data-v="pla">PLA Basic</button>
+        </div>
+        <p class="helper" id="p3Fit"></p>
+        <details class="more" id="p3Opts" open><summary>Options</summary><div id="p3OptsBody"></div></details>
+      </div>
+    </div>
+    <footer class="dlg-foot">
+      <button class="btn ghost" type="button" id="p3Watch" title="A timelapse of your printer printing it"><svg class="ic" aria-hidden="true"><use href="#i-film"/></svg>Watch it print</button>
+      <span class="helper p3-saved" id="p3Saved" role="status"></span>
+      <span class="spacer"></span>
+      <button class="btn secondary" type="button" id="p3Stl" title="STL: one file per part, zipped when there are several">STL</button>
+      <button class="btn primary" type="button" id="p3Go"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg><span>Download 3MF</span></button>
+    </footer>
+  </div>
+</dialog>
+
 <!-- ─────────── Shortcuts ─────────── -->
 <dialog class="sheet-dialog" id="keysDialog" aria-labelledby="keysTitle">
   <form method="dialog" class="dlg">
@@ -544,6 +616,7 @@
       <dt><kbd>M</kbd></dt><dd>Next mode: Artistic, Realistic, Line art</dd>
       <dt><kbd>+</kbd> <kbd>−</kbd> <kbd>0</kbd></dt><dd>Loupe: zoom in / out / whole sheet (or scroll, pinch, double-click)</dd>
       <dt><kbd>R</kbd></dt><dd>Film a timelapse</dd>
+      <dt><kbd>P</kbd></dt><dd>3D print it</dd>
       <dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Apply a look</dd>
       <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Fewer / more rings</dd>
       <dt><kbd>1</kbd>–<kbd>4</kbd> <kbd>[</kbd> <kbd>]</kbd></dt><dd>Realistic: style A–D / less or more detail</dd>

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print products</title>
+<style>
+  :root { --bg: #ecebe7; --ink: #1d1d21; --muted: #6b6a66; --card: #fbfaf7; --bad: #b3261e; --ok: #2e6b3a; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  header { padding: 14px 16px 4px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  #status { color: var(--muted); }
+  #sheet { display: block; max-width: 100%; margin: 8px auto; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; padding: 12px 16px 24px; }
+  .card { background: var(--card); border-radius: 10px; padding: 10px; }
+  .card canvas { width: 100%; height: auto; border-radius: 6px; display: block; }
+  .card h2 { font-size: 15px; margin: 8px 0 2px; }
+  .size { color: var(--muted); font-size: 12px; }
+  .card ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  .card a { font-size: 12px; margin-right: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Spiralist print products: A plaque, B wire, C lithophane, D cutter + stamp</h1>
+  <div id="status">building...</div>
+</header>
+<canvas id="sheet" width="8" height="8"></canvas>
+<div id="grid"></div>
+<script type="module" src="print3d_products.js"></script>
+</body>
+</html>

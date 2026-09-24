@@ -151,11 +151,78 @@ async function run(msg) {
   }
 }
 
+// ------------------------------------------------------------------ silhouette (js/lineart/silhouette.js)
+// Runs in a second instance of worker.js, so it overlaps the line model; on the main thread when a
+// worker cannot run it (MediaPipe not loading in a module worker, no OffscreenCanvas).
+let silWorker = null, silWorkerBroken = false, silWorkerError = null;
+const silPending = new Map();
+function getSilWorker() {
+  if (silWorker || silWorkerBroken) return silWorker;
+  try {
+    if (typeof OffscreenCanvas === 'undefined') throw new Error('no OffscreenCanvas');
+    silWorker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    silWorker.onmessage = e => {
+      const p = silPending.get(e.data.id);
+      if (!p) return;
+      silPending.delete(e.data.id);
+      e.data.ok ? p.resolve(e.data.out) : p.reject(new Error(e.data.error));
+    };
+    silWorker.onerror = e => {
+      silWorkerBroken = true; silWorker = null;
+      for (const [, p] of silPending) p.reject(new Error('silhouette worker failed: ' + (e.message || 'error')));
+      silPending.clear();
+    };
+  } catch { silWorkerBroken = true; silWorker = null; }
+  return silWorker;
+}
+const silCache = new Map();
+/** The subject's silhouette for a frame canvas (see silhouette.js). opts: { tap, kindHint, landmarks }. */
+export async function silhouetteOf(canvas, opts = {}) {
+  const N = canvas.width;
+  const rgba = canvas.getContext('2d').getImageData(0, 0, N, N).data;
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < rgba.length; i += 61) h = Math.imul(h ^ rgba[i], 16777619) >>> 0;
+  const key = `${N}:${h}|${opts.tap ? opts.tap.map(v => (+v).toFixed(3)).join(',') : ''}|${opts.kindHint || ''}|${opts.landmarks ? 1 : 0}`;
+  if (silCache.has(key)) return { ...silCache.get(key), cached: true };
+  const o = { tap: opts.tap || null, kindHint: opts.kindHint || null, landmarks: opts.landmarks || null };
+  let out = null;
+  const w = getSilWorker();
+  if (w) {
+    try {
+      out = await new Promise((resolve, reject) => {
+        const id = nextId++;
+        silPending.set(id, { resolve, reject });
+        w.postMessage({ id, sil: { rgba, N, opts: o } }, [rgba.buffer]);
+      });
+      out.where = 'worker';
+    } catch (e) {
+      // MediaPipe would not start in the worker: the main thread from now on
+      silWorkerBroken = true;
+      try { silWorker && silWorker.terminate(); } catch { /* gone */ }
+      silWorker = null;
+      silWorkerError = String(e && e.message || e).split(/\r?\n/).slice(0, 2).join(' ');
+      console.debug('lineart: silhouette worker failed, using the main thread:', silWorkerError);
+    }
+  }
+  if (!out) {
+    const { silhouette } = await import('./silhouette.js');
+    out = await silhouette(canvas, o);
+    out.where = 'main';
+    if (silWorkerError) out.workerError = silWorkerError;
+  }
+  silCache.set(key, out);
+  if (silCache.size > 4) silCache.delete(silCache.keys().next().value);
+  return out;
+}
+
 /**
  * source: ImageBitmap | canvas | img; crop: { x, y, zoom, rotation }.
  * opts: { detail 0..1, size (model input, px, multiple of 4), engine 'auto'|'model'|'xdog',
  *         backend 'auto'|'webgpu'|'wasm' (the model's runtime), face bool,
- *         debugInk bool (also return the N x N line map) }
+ *         debugInk bool (also return the N x N line map),
+ *         silhouette false | true | { tap: [x, y] frame fractions, kindHint }: also find the
+ *           subject's outer shape (js/lineart/silhouette.js), returned as features.silhouette
+ *           (null when it failed; silhouetteError says why). Runs alongside the line model. }
  * -> { strokes, features, timings, engine, stats }
  */
 export async function extractLines(source, crop, opts = {}) {
@@ -172,6 +239,14 @@ export async function extractLines(source, crop, opts = {}) {
     try { landmarks = await detectFace(canvas); } catch (e) { faceFailed = String(e && e.message || e); }
     timings.face = Math.round(performance.now() - t1);
   }
+  let silPromise = null;
+  if (o.silhouette) {
+    const so = typeof o.silhouette === 'object' ? o.silhouette : {};
+    const ts = performance.now();
+    silPromise = silhouetteOf(canvas, { tap: so.tap || null, kindHint: so.kindHint || null, landmarks })
+      .then(r => { timings.silhouette = Math.round(performance.now() - ts); return { sil: r, err: null }; },
+        e => ({ sil: null, err: String(e && e.message || e) }));
+  }
   const rgba = canvas.getContext('2d').getImageData(0, 0, N, N).data;
   let out;
   try {
@@ -182,9 +257,16 @@ export async function extractLines(source, crop, opts = {}) {
     out = await run({ rgba: rgba2, N, detail: o.detail, engine: 'xdog', landmarks, debugInk: !!o.debugInk });
     out.modelError = String(e && e.message || e);
   }
+  let silhouetteError = null;
+  if (silPromise) {
+    const { sil, err } = await silPromise;
+    out.features.silhouette = sil;
+    silhouetteError = err;
+    if (err) console.warn('lineart: silhouette failed:', err.split(/\r?\n/)[0]);
+  }
   Object.assign(timings, out.timings, { total: Math.round(performance.now() - t0) });
   const check = validateStrokes(out.strokes);
   if (!check.ok) console.warn('lineart: invalid strokes', check.errors.slice(0, 5));
   return { strokes: out.strokes, features: out.features, timings, engine: out.engine, stats: out.stats,
-    faceError: faceFailed, modelError: out.modelError || null, ink: out.ink || null, all: out.all || null, N };
+    faceError: faceFailed, modelError: out.modelError || null, silhouetteError, ink: out.ink || null, all: out.all || null, N };
 }
