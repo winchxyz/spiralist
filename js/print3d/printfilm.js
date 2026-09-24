@@ -300,10 +300,18 @@ export function createPrintFilm(tp, opts = {}) {
   const ext = [box.hi[0] - box.lo[0], box.hi[1] - box.lo[1], box.hi[2] - box.lo[2]];
   const R = Math.max(20, 0.5 * Math.hypot(...ext));
   const tall = ext[2] > 0.45 * Math.max(ext[0], ext[1]);
+  // a thin standing panel (a lithophane) is watched from its face, not its edge: the orbit swings
+  // across the face instead of going round the part
+  const thin = tall && Math.min(ext[0], ext[1]) < 0.35 * Math.max(ext[0], ext[1]);
+  const faceYaw = ext[0] < ext[1] ? 90 : 0;
   const zTop = box.hi[2];
   const start = [bed[0] / 2, bed[1] / 2, (tp.zBase || 0) + 8];
   const H = tp.layerMm || 0.2, HW = (tp.lineMm || 0.42) * 0.56;
-  let camera = opts.camera === 'printer' ? 'printer' : 'orbit';
+  const CAMERAS = ['orbit', 'printer', 'nozzle'];
+  let camera = CAMERAS.includes(opts.camera) ? opts.camera : 'orbit';
+  // the viewer's own turn and zoom on top of the film's camera (in-app only, never in an export):
+  // a drag turns it, the wheel or a pinch zooms, a reset hands the camera back to the film
+  const user = { yaw: 0, pitch: 0, zoom: 1, active: false };
 
   function stateAt(i) {
     const a = map.at(i);
@@ -315,7 +323,7 @@ export function createPrintFilm(tp, opts = {}) {
     return { ...a, i, perFrame, noz, layer, film: (i + 0.5) / fps };
   }
 
-  function render(st, W, H2) {
+  function render(st, W, H2, interactive = false) {
     if (canvas.width !== W || canvas.height !== H2) { canvas.width = W; canvas.height = H2; }
     gl.viewport(0, 0, W, H2);
     gl.clearColor(...bdLin.map(lin).map(v => Math.pow(v / (1 + v * 0.15), 1 / 2.2)), 1);
@@ -345,7 +353,8 @@ export function createPrintFilm(tp, opts = {}) {
     let eye, target;
     if (camera === 'orbit') {
       const u = st.film / map.D;
-      const yaw = (-32 + 46 * u + (st.phase === 'outro' ? 40 * smooth(0, 1, st.u) : 0)) * DEG;
+      const yaw = (thin ? faceYaw - 20 + 28 * u + (st.phase === 'outro' ? 12 * smooth(0, 1, st.u) : 0)
+        : -32 + 46 * u + (st.phase === 'outro' ? 40 * smooth(0, 1, st.u) : 0)) * DEG;
       const zoomT = smooth(0, 1, (st.film - map.intro * 0.5) / (map.intro + map.P * 0.35));
       // a low nozzle-cam at the start (under the toolhead's shell), rising as it pulls back
       const pitch = mix(tall ? 12 : 17, tall ? 15 : 36, zoomT) * DEG;
@@ -355,11 +364,30 @@ export function createPrintFilm(tp, opts = {}) {
       target = [tgt[0] + bedOff[0], tgt[1] + bedOff[1], tgt[2] + bedOff[2]];
       const d = fit * k;
       eye = [target[0] + d * Math.cos(pitch) * Math.sin(yaw), target[1] - d * Math.cos(pitch) * Math.cos(yaw), target[2] + d * Math.sin(pitch)];
+    } else if (camera === 'nozzle') {
+      // close on the plastic being laid (the toolpath's point now, even while a fast bed slinger
+      // film parks the head), low enough to look under the hotend's shell, slowly turning; at the
+      // end it pulls back to the whole part
+      const u = st.film / map.D;
+      const yaw = ((thin ? faceYaw : -40) + 22 * Math.sin(u * Math.PI * 2)) * DEG, pitch = 24 * DEG;
+      const out = st.phase === 'outro' ? smooth(0, 1, st.u) : 0;
+      const at = [mix(nx, C[0], out), mix(ny, C[1], out), mix(Math.max(nz, 0.5), C[2], out)];
+      target = [at[0] + bedOff[0], at[1] + bedOff[1], at[2] + bedOff[2]];
+      const d = mix(Math.max(42, fit * 0.3), fit * 0.9, out);
+      eye = [target[0] + d * Math.cos(pitch) * Math.sin(yaw), target[1] - d * Math.cos(pitch) * Math.cos(yaw), target[2] + d * Math.sin(pitch)];
     } else {
-      const yaw = -38 * DEG, pitch = (tall ? 14 : 30) * DEG;
+      const yaw = (thin ? faceYaw - 30 : -38) * DEG, pitch = (tall ? 14 : 30) * DEG;
       target = [C[0], C[1], printer.kin === 'bedslinger' ? C[2] : zTop * 0.5];
       const d = fit * (printer.kin === 'bedslinger' ? 1.22 : 1.12);
       eye = [target[0] + d * Math.cos(pitch) * Math.sin(yaw), target[1] - d * Math.cos(pitch) * Math.cos(yaw), target[2] + d * Math.sin(pitch)];
+    }
+    if (interactive && user.active) {
+      // the viewer's turn and zoom, around the same target
+      const dx = eye[0] - target[0], dy = eye[1] - target[1], dz = eye[2] - target[2], r0 = Math.max(1e-6, Math.hypot(dx, dy, dz));
+      const yaw1 = Math.atan2(dx, -dy) + user.yaw;
+      const pitch1 = Math.min(88 * DEG, Math.max(3 * DEG, Math.asin(Math.max(-1, Math.min(1, dz / r0))) + user.pitch));
+      const r = r0 * user.zoom;
+      eye = [target[0] + r * Math.cos(pitch1) * Math.sin(yaw1), target[1] - r * Math.cos(pitch1) * Math.cos(yaw1), target[2] + r * Math.sin(pitch1)];
     }
     const dist = Math.hypot(eye[0] - target[0], eye[1] - target[1], eye[2] - target[2]);
     const VP = mul(perspective(fovy, aspect, Math.max(0.5, dist * 0.02), dist * 8 + 1200), lookAt(eye, target, [0, 0, 1]));
@@ -415,13 +443,24 @@ export function createPrintFilm(tp, opts = {}) {
     canvas, map, info, tp,
     get frames() { return map.frames; },
     get camera() { return camera; },
-    set camera(v) { camera = v === 'printer' ? 'printer' : 'orbit'; },
+    set camera(v) { camera = CAMERAS.includes(v) ? v : 'orbit'; },
+    /** The viewer's turn (radians) and zoom on top of the film camera; set .active to use it. */
+    get view() { return user; },
+    resetView() { user.yaw = 0; user.pitch = 0; user.zoom = 1; user.active = false; },
     state: stateAt,
-    /** Paint frame i into a 2D context of W x H (GL render + HUD). */
-    draw(i, ctx, W = ctx.canvas.width, H2 = ctx.canvas.height, { scale = 1 } = {}) {
+    /** The first frame at which layer k is printing (layer by layer stepping). */
+    frameForLayer(k) {
+      const L = tp.layers.length;
+      k = Math.max(0, Math.min(L - 1, k));
+      let lo = 0, hi = map.frames - 1;
+      while (lo < hi) { const m = (lo + hi) >> 1; const a = stateAt(m); if (a.phase === 'intro' || a.layer < k) lo = m + 1; else hi = m; }
+      return lo;
+    },
+    /** Paint frame i into a 2D context of W x H (GL render + HUD); interactive: with the viewer's view. */
+    draw(i, ctx, W = ctx.canvas.width, H2 = ctx.canvas.height, { scale = 1, interactive = false } = {}) {
       const st = stateAt(Math.min(map.frames - 1, Math.max(0, i)));
       const rw = Math.max(2, Math.round(W * scale)), rh = Math.max(2, Math.round(H2 * scale));
-      const r = render(st, rw, rh);
+      const r = render(st, rw, rh, interactive);
       ctx.drawImage(canvas, 0, 0, rw, rh, 0, 0, W, H2);
       drawHud(ctx, W, H2, st, tp, info, opts);
       return { ...st, ...r };
@@ -566,6 +605,14 @@ const CSS = `
 .ptl-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto}
 .ptl-note{font-size:12.5px}
 .ptl-note.warn{color:#e8a33c;font-weight:600}
+.ptl-view{touch-action:none;cursor:grab}.ptl-view:active{cursor:grabbing}
+.ptl:focus,.ptl:focus-visible{outline:none}
+@media (hover:none){.ptl-keys{display:none}}
+.ptl-hint{font-size:12.5px;margin-top:6px!important}
+.ptl-pos{font:500 12.5px ui-monospace,"SF Mono","Cascadia Mono",Consolas,monospace;color:var(--text-muted,#6e6a63);margin:-6px 0 0!important}
+.ptl-video{border-top:1px solid var(--border,rgba(0,0,0,.1));padding-top:12px;display:flex;flex-direction:column;gap:12px}
+.ptl-video>summary{cursor:pointer;font-weight:600}
+.ptl-video:not([open]){gap:0}
 .ptl-close{position:absolute;top:10px;right:10px;z-index:2;background:rgba(20,20,22,.6);color:#fff;border:0;border-radius:50%;width:34px;height:34px;font-size:20px;line-height:34px;cursor:pointer}
 @media (max-width:760px){.ptl{overflow:auto}.ptl-wrap{grid-template-columns:1fr;max-height:none}.ptl-stage{border-radius:16px 16px 0 0;min-height:240px}.ptl-stage canvas{max-height:52dvh}}
 `;
@@ -586,7 +633,8 @@ export function openPrintTimelapse({ parts, colors = {}, printer, product, art, 
   const artTitle = typeof art === 'string' ? art : art?.title || art?.label || '';
   let pr = resolvePrinter(printer);
   const fil = (filament || (/pla/i.test(prod.settings?.filament || '') ? 'pla' : 'petg')).toLowerCase();
-  const S = { camera, seconds, fps, format, tp: null, film: null, gcode: null, playing: !still, frame: 0, result: null, abort: null, worker: null };
+  // speed: how many seconds the whole print takes to play here; seconds / fps / format: the video
+  const S = { camera, speed: 30, seconds, fps, format, tp: null, film: null, gcode: null, playing: !still, frame: 0, result: null, abort: null, worker: null };
 
   const dlg = document.createElement('dialog');
   dlg.className = 'ptl';
@@ -595,24 +643,29 @@ export function openPrintTimelapse({ parts, colors = {}, printer, product, art, 
   <div class="ptl-wrap">
     <div class="ptl-stage">
       <button class="ptl-close" type="button" aria-label="Close">×</button>
-      <canvas class="ptl-view" role="img" aria-label="Preview of the print timelapse"></canvas>
+      <canvas class="ptl-view" role="img" aria-label="Your print being printed, layer by layer. Drag to look around."></canvas>
       <div class="ptl-busy"><span class="ptl-busy-txt">Slicing…</span><div class="ptl-bar"><i></i></div></div>
     </div>
     <div class="ptl-side">
-      <div><h2>Print timelapse</h2><p class="ptl-sum">${productName}${artTitle ? ' · ' + artTitle : ''}</p></div>
-      <div class="ptl-play"><button class="ptl-btn ptl-pp" type="button" aria-label="${still ? 'Play' : 'Pause'}">${still ? '▶' : '❚❚'}</button><input class="ptl-scrub" type="range" min="0" max="1000" value="0" aria-label="Scrub" style="--fill:0%"></div>
+      <div><h2>Watch it print</h2><p class="ptl-sum">${productName}${artTitle ? ' · ' + artTitle : ''}</p>
+        <p class="ptl-hint">Your printer building it, layer by layer, right here. Drag to look around, scroll or pinch to zoom, double-click to reset the view.<span class="ptl-keys"> Space plays or pauses; the arrow keys step one layer.</span></p></div>
+      <div class="ptl-play"><button class="ptl-btn ptl-pp" type="button" aria-label="${still ? 'Play' : 'Pause'}">${still ? '▶' : '❚❚'}</button><input class="ptl-scrub" type="range" min="0" max="1000" value="0" aria-label="Position in the print" style="--fill:0%"></div>
+      <p class="ptl-note ptl-pos"></p>
+      <div class="ptl-row"><span>Whole print in</span><div class="ptl-seg" data-k="speed"><button data-v="15">15 s</button><button data-v="30">30 s</button><button data-v="60">1 min</button><button data-v="180">3 min</button></div></div>
+      <div class="ptl-row"><span>Camera</span><div class="ptl-seg" data-k="camera"><button data-v="orbit">Orbit</button><button data-v="printer">Printer cam</button><button data-v="nozzle">Nozzle</button></div></div>
       <div class="ptl-row"><span>Printer</span><select class="ptl-printer" aria-label="Printer">${PRESETS.map(p => `<option value="${p.id}">${p.name} (${p.kinematics === 'corexy' ? 'CoreXY' : 'bed slinger'})</option>`).join('')}</select></div>
-      <div class="ptl-row"><span>Camera</span><div class="ptl-seg" data-k="camera"><button data-v="orbit">Slow orbit</button><button data-v="printer">Printer cam</button></div></div>
-      <div class="ptl-row"><span>Format</span><div class="ptl-seg" data-k="format"><button data-v="story">9:16</button><button data-v="square">1:1</button><button data-v="wide">16:9</button></div></div>
-      <div class="ptl-row"><span>Length</span><div class="ptl-seg" data-k="seconds"><button data-v="10">10 s</button><button data-v="15">15 s</button><button data-v="30">30 s</button></div></div>
-      <div class="ptl-row"><span>Frame rate</span><div class="ptl-seg" data-k="fps"><button data-v="30">30 fps</button><button data-v="60">60 fps</button></div></div>
       <p class="ptl-note ptl-info"></p>
       <label class="ptl-drop" tabindex="0">Replay your own sliced file: drop a .gcode or .gcode.3mf here<input type="file" accept=".gcode,.3mf,.gco,.g" hidden></label>
-      <div class="ptl-actions">
-        <button class="ptl-btn primary ptl-export" type="button">Export MP4</button>
-        <button class="ptl-btn ptl-dl" type="button" hidden>Download</button>
-        <button class="ptl-btn ptl-x" type="button" hidden>Post on X</button>
-      </div>
+      <details class="ptl-video"><summary>Save as a video</summary>
+        <div class="ptl-row"><span>Format</span><div class="ptl-seg" data-k="format"><button data-v="story">9:16</button><button data-v="square">1:1</button><button data-v="wide">16:9</button></div></div>
+        <div class="ptl-row"><span>Length</span><div class="ptl-seg" data-k="seconds"><button data-v="10">10 s</button><button data-v="15">15 s</button><button data-v="30">30 s</button></div></div>
+        <div class="ptl-row"><span>Frame rate</span><div class="ptl-seg" data-k="fps"><button data-v="30">30 fps</button><button data-v="60">60 fps</button></div></div>
+        <div class="ptl-actions">
+          <button class="ptl-btn primary ptl-export" type="button">Export MP4</button>
+          <button class="ptl-btn ptl-dl" type="button" hidden>Download</button>
+          <button class="ptl-btn ptl-x" type="button" hidden>Post on X</button>
+        </div>
+      </details>
       <p class="ptl-note ptl-status" role="status"></p>
     </div>
   </div>`;
@@ -638,11 +691,12 @@ export function openPrintTimelapse({ parts, colors = {}, printer, product, art, 
   });
 
   function sizeView() {
-    const f = FILM_FORMATS[S.format];
+    // the view fills the stage; the video keeps its own format (Save as a video)
     const stage = $('.ptl-stage').getBoundingClientRect();
-    const maxW = Math.max(200, stage.width - 24), maxH = Math.max(200, Math.min(window.innerHeight - 120, (window.innerWidth <= 760 ? window.innerHeight * 0.52 : 900)));
-    const k = Math.min(maxW / f.w, maxH / f.h);
-    const cw = Math.round(f.w * k), ch = Math.round(f.h * k), dpr = Math.min(2, window.devicePixelRatio || 1);
+    const phone = window.innerWidth <= 760;
+    const cw = Math.round(Math.max(200, stage.width));
+    const ch = Math.round(Math.max(200, Math.min(phone ? window.innerHeight * 0.52 : window.innerHeight - 90, phone ? cw : cw * 0.82)));
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
     view.style.width = cw + 'px'; view.style.height = ch + 'px';
     view.width = Math.round(cw * dpr) & ~1; view.height = Math.round(ch * dpr) & ~1;
   }
@@ -663,19 +717,26 @@ export function openPrintTimelapse({ parts, colors = {}, printer, product, art, 
     $('.ptl-info').textContent = lines.join(' ');
     $('.ptl-info').classList.toggle('warn', !S.gcode && notes.some(n => /^Colour warning/.test(n)));
   }
+  const filmOpts = over => ({ camera: S.camera, colors, title: productName, canvas: glCanvas.cloneNode(),
+    subtitle: `${pr.name} · ${S.tp.filament?.name || FILAMENTS[fil]?.name || 'PETG'}${artTitle ? ' · ' + artTitle : ''}`, ...over });
   function makeFilm() {
-    S.film?.dispose?.();
+    // keep the place in the print and the viewer's view across a new speed, printer or file
+    const old = S.film, at = old ? S.frame / Math.max(1, old.frames - 1) : 0, view = old ? { ...old.view } : null;
+    old?.dispose?.();
     S.film = null;
     if (!S.tp) return;
-    const title = productName, sub = `${pr.name} · ${S.tp.filament?.name || FILAMENTS[fil]?.name || 'PETG'}${artTitle ? ' · ' + artTitle : ''}`;
-    S.film = createPrintFilm(S.tp, { camera: S.camera, seconds: S.seconds, fps: S.fps, colors, title, subtitle: sub, canvas: glCanvas.cloneNode() });
-    S.frame = Math.min(S.frame, S.film.frames - 1);
+    S.film = createPrintFilm(S.tp, filmOpts({ seconds: S.speed, fps: 30 }));
+    if (view) Object.assign(S.film.view, view);
+    S.frame = Math.round(at * (S.film.frames - 1));
     info();
   }
   function paint() {
     if (!S.film) return;
     const f = S.film, a = performance.now();
-    f.draw(S.frame, vctx, view.width, view.height);
+    const st = f.draw(S.frame, vctx, view.width, view.height, { interactive: true });
+    const L = S.tp.layers.length;
+    $('.ptl-pos').textContent = st.phase === 'intro' ? `Heating up · layer 0 of ${L}`
+      : `Layer ${Math.min(L, st.layer + 1)} of ${L} · ${clock(Math.min(S.tp.total, st.t))} of ${clock(S.tp.total)}`;
     S.paints = (S.paints || 0) + 1; S.paintMs = (S.paintMs || 0) + performance.now() - a;   // preview cost (lab / tests)
     const v = Math.round(S.frame / Math.max(1, f.frames - 1) * 1000);
     $('.ptl-scrub').value = String(v); $('.ptl-scrub').style.setProperty('--fill', `${v / 10}%`);   // the app's range fill
@@ -725,15 +786,57 @@ export function openPrintTimelapse({ parts, colors = {}, printer, product, art, 
   dlg.querySelectorAll('.ptl-seg').forEach(seg => seg.addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b || S.abort) return;
     const k = seg.dataset.k, v = b.dataset.v;
-    S[k] = k === 'seconds' || k === 'fps' ? +v : v;
+    S[k] = k === 'seconds' || k === 'fps' || k === 'speed' ? +v : v;
     syncSeg();
     clearResult();
-    if (k === 'format') sizeView();
-    if (k === 'camera' && S.film) S.film.camera = S.camera; else makeFilm();
+    if (k === 'camera' && S.film) { S.film.camera = S.camera; S.film.resetView(); }
+    else if (k === 'speed') makeFilm();
     paint();
   }));
-  $('.ptl-pp').addEventListener('click', () => {
-    S.playing = !S.playing; $('.ptl-pp').textContent = S.playing ? '❚❚' : '▶'; $('.ptl-pp').setAttribute('aria-label', S.playing ? 'Pause' : 'Play');
+  const setPlaying = on => { S.playing = on; $('.ptl-pp').textContent = on ? '❚❚' : '▶'; $('.ptl-pp').setAttribute('aria-label', on ? 'Pause' : 'Play'); };
+  $('.ptl-pp').addEventListener('click', () => setPlaying(!S.playing));
+  // look around: drag turns the view, the wheel or a pinch zooms, a double-click gives the camera back
+  const ptrs = new Map();
+  let pinch0 = 0, zoom0 = 1;
+  const zoomTo = z => Math.min(3, Math.max(0.25, z));
+  view.addEventListener('pointerdown', e => {
+    if (!S.film) return;
+    view.setPointerCapture?.(e.pointerId);
+    ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a[0] - b[0], a[1] - b[1]); zoom0 = S.film.view.zoom; }
+  });
+  view.addEventListener('pointermove', e => {
+    if (!S.film || !ptrs.has(e.pointerId)) return;
+    const prev = ptrs.get(e.pointerId);
+    ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    const v = S.film.view;
+    v.active = true;
+    if (ptrs.size >= 2) { const [a, b] = [...ptrs.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]); if (pinch0 && d) v.zoom = zoomTo(zoom0 * pinch0 / d); }
+    else { v.yaw -= (e.clientX - prev[0]) * 0.008; v.pitch += (e.clientY - prev[1]) * 0.006; }
+    if (!S.playing) paint();
+  });
+  const lift = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch0 = 0; };
+  view.addEventListener('pointerup', lift);
+  view.addEventListener('pointercancel', lift);
+  view.addEventListener('wheel', e => {
+    if (!S.film) return;
+    e.preventDefault();
+    const v = S.film.view; v.active = true; v.zoom = zoomTo(v.zoom * Math.exp(e.deltaY * 0.0015));
+    if (!S.playing) paint();
+  }, { passive: false });
+  view.addEventListener('dblclick', () => { S.film?.resetView(); paint(); });
+  // keys: space plays or pauses, the arrows step one layer (the scrubber keeps its own arrows)
+  const stepLayer = d => {
+    if (!S.film) return;
+    setPlaying(false);
+    const st = S.film.state(S.frame);
+    S.frame = S.film.frameForLayer((st.phase === 'intro' ? -1 : st.layer) + d);
+    paint();
+  };
+  dlg.addEventListener('keydown', e => {
+    if (!S.film || e.target.closest('select, .ptl-drop')) return;
+    if (e.key === ' ' && !e.target.closest('button, summary, input')) { e.preventDefault(); setPlaying(!S.playing); }
+    else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && !e.target.closest('input')) { e.preventDefault(); stepLayer(e.key === 'ArrowRight' ? 1 : -1); }
   });
   $('.ptl-scrub').addEventListener('input', e => {
     if (!S.film) return; S.playing = false; $('.ptl-pp').textContent = '▶';
@@ -775,8 +878,9 @@ export function openPrintTimelapse({ parts, colors = {}, printer, product, art, 
     $('.ptl-export').textContent = 'Stop';
     clearResult();
     const t0 = performance.now();
+    const ef = createPrintFilm(S.tp, filmOpts({ seconds: S.seconds, fps: S.fps }));
     try {
-      const res = await renderPrintFilm(S.film, {
+      const res = await renderPrintFilm(ef, {
         width: f.w, height: f.h, signal: S.abort.signal,
         onProgress: (done, total, cv) => {
           status(`Filming… ${Math.round(done / total * 100)}% (frame ${done} of ${total})`);
@@ -791,7 +895,7 @@ export function openPrintTimelapse({ parts, colors = {}, printer, product, art, 
     } catch (e) {
       status(e.code === 'aborted' ? 'Filming stopped.' : `Filming failed: ${e.message || e}`);
     } finally {
-      S.abort = null; $('.ptl-export').textContent = 'Export MP4'; lastT = 0;
+      ef.dispose(); S.abort = null; $('.ptl-export').textContent = 'Export MP4'; lastT = 0;
     }
   });
   $('.ptl-dl').addEventListener('click', async () => {
@@ -820,6 +924,8 @@ export function openPrintTimelapse({ parts, colors = {}, printer, product, art, 
   $('.ptl-close').addEventListener('click', close);
   dlg.addEventListener('cancel', e => { if (S.abort) { e.preventDefault(); S.abort.abort(); return; } e.preventDefault(); close(); });
   dlg.showModal();
+  // focus Play/Pause, not the close button: Space then pauses the print instead of closing it
+  dlg.querySelector('.ptl-pp').focus({ preventScroll: true });
   sizeView();
   raf = requestAnimationFrame(loop);
   build();
